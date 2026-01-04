@@ -5,10 +5,223 @@ export interface TemplateConfig {
   model: Record<string, { type: string; initial: any }>
   methods?: Record<string, string>
   imports?: Array<Record<string, string>>
+  unsafeEval?: boolean
+}
+
+// Iframe sandbox manager for safe code evaluation
+class IframeSandbox {
+  private iframe: HTMLIFrameElement | null = null
+  private ready: boolean = false
+  private pendingRequests: Map<number, { resolve: (value: any) => void; reject: (error: any) => void }> = new Map()
+  private requestId: number = 0
+  private messageHandler: (event: MessageEvent) => void
+
+  constructor() {
+    this.messageHandler = this.handleMessage.bind(this)
+    this.initialize()
+  }
+
+  private initialize() {
+    // Create iframe with sandbox attribute for null origin isolation
+    this.iframe = document.createElement('iframe')
+    this.iframe.setAttribute('sandbox', 'allow-scripts')
+    this.iframe.style.display = 'none'
+    
+    // Initialize sandbox with evaluation code using srcdoc attribute
+    // This avoids cross-origin issues when accessing the iframe's document
+    const sandboxHTML = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+</head>
+<body>
+  <script>
+    window.addEventListener('message', function(event) {
+      // Accept messages from parent (sandbox has null origin, so we can't check origin)
+      // In production, you'd want additional validation here
+      if (!event.data || event.data.type !== 'SANDBOX_EVAL') {
+        return;
+      }
+      
+      const { type, id, code, context } = event.data;
+      
+      if (type === 'SANDBOX_EVAL') {
+        try {
+          // Create context object
+          const contextObj = {};
+          if (context) {
+            Object.keys(context).forEach(key => {
+              // Only set valid JavaScript identifiers
+              if (/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(key)) {
+                contextObj[key] = context[key];
+              }
+            });
+          }
+          
+          // Get parameter names
+          const paramNames = Object.keys(contextObj);
+          
+          // Evaluate expression in sandbox
+          const func = new Function(...paramNames, \`return \${code}\`);
+          const result = func(...paramNames.map(name => contextObj[name]));
+          
+          // Send result back
+          window.parent.postMessage({
+            type: 'SANDBOX_RESULT',
+            id: id,
+            result: result,
+            error: null
+          }, '*');
+        } catch (error) {
+          // Send error back with context info for debugging
+          const availableKeys = context ? Object.keys(context).filter(k => /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(k)) : [];
+          const errorMsg = error.message + ' (Available context keys: ' + availableKeys.join(', ') + ')';
+          window.parent.postMessage({
+            type: 'SANDBOX_RESULT',
+            id: id,
+            result: null,
+            error: errorMsg
+          }, '*');
+        }
+      }
+    });
+    
+    // Signal that sandbox is ready
+    window.parent.postMessage({
+      type: 'SANDBOX_READY'
+    }, '*');
+  </script>
+</body>
+</html>`
+
+    // Use srcdoc attribute to set HTML content (avoids cross-origin document access)
+    this.iframe.srcdoc = sandboxHTML
+    document.body.appendChild(this.iframe)
+
+    // Set up message listener
+    window.addEventListener('message', this.messageHandler)
+  }
+
+  private handleMessage(event: MessageEvent) {
+    if (event.data.type === 'SANDBOX_READY') {
+      this.ready = true
+      return
+    }
+
+    if (event.data.type === 'SANDBOX_RESULT') {
+      const { id, result, error } = event.data
+      const request = this.pendingRequests.get(id)
+      if (request) {
+        this.pendingRequests.delete(id)
+        if (error) {
+          request.reject(new Error(error))
+        } else {
+          request.resolve(result)
+        }
+      }
+    }
+  }
+
+  async evaluate(code: string, context: Record<string, any>): Promise<any> {
+    return new Promise((resolve, reject) => {
+      if (!this.iframe || !this.iframe.contentWindow) {
+        reject(new Error('Sandbox iframe not initialized'))
+        return
+      }
+
+      // Wait for sandbox to be ready
+      if (!this.ready) {
+        const checkReady = setInterval(() => {
+          if (this.ready) {
+            clearInterval(checkReady)
+            this.sendEvaluationRequest(code, context, resolve, reject)
+          }
+        }, 10)
+        // Timeout after 5 seconds
+        setTimeout(() => {
+          clearInterval(checkReady)
+          if (!this.ready) {
+            reject(new Error('Sandbox initialization timeout'))
+          }
+        }, 5000)
+        return
+      }
+
+      this.sendEvaluationRequest(code, context, resolve, reject)
+    })
+  }
+
+  private sendEvaluationRequest(
+    code: string,
+    context: Record<string, any>,
+    resolve: (value: any) => void,
+    reject: (error: any) => void
+  ) {
+    const id = this.requestId++
+    this.pendingRequests.set(id, { resolve, reject })
+
+    // Serialize context - postMessage uses structured cloning
+    // Filter out non-serializable values (functions, symbols, etc.)
+    const serializableContext: Record<string, any> = {}
+    Object.keys(context).forEach(key => {
+      const value = context[key]
+      
+      // Skip functions (can't be serialized via postMessage)
+      if (typeof value === 'function') {
+        return
+      }
+      
+      // Skip symbols
+      if (typeof value === 'symbol') {
+        return
+      }
+      
+      // All other types should be serializable via structured cloning
+      // (primitives, plain objects, arrays, etc.)
+      serializableContext[key] = value
+    })
+
+    this.iframe!.contentWindow!.postMessage(
+      {
+        type: 'SANDBOX_EVAL',
+        id,
+        code,
+        context: serializableContext
+      },
+      '*'
+    )
+
+    // Timeout after 10 seconds
+    setTimeout(() => {
+      if (this.pendingRequests.has(id)) {
+        this.pendingRequests.delete(id)
+        reject(new Error('Evaluation timeout'))
+      }
+    }, 10000)
+  }
+
+  destroy() {
+    if (this.iframe && this.iframe.parentNode) {
+      this.iframe.parentNode.removeChild(this.iframe)
+    }
+    window.removeEventListener('message', this.messageHandler)
+    this.iframe = null
+    this.ready = false
+  }
+}
+
+// Singleton sandbox instance
+let sandboxInstance: IframeSandbox | null = null
+
+function getSandbox(): IframeSandbox {
+  if (!sandboxInstance) {
+    sandboxInstance = new IframeSandbox()
+  }
+  return sandboxInstance
 }
 
 // Convert kebab-case to PascalCase for component names
-export function toPascalCase(str: string): string {
+function toPascalCase(str: string): string {
   return str
     .split('-')
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
@@ -16,7 +229,7 @@ export function toPascalCase(str: string): string {
 }
 
 // Convert PascalCase to kebab-case
-export function toKebabCase(str: string): string {
+function toKebabCase(str: string): string {
   return str
     .replace(/([A-Z])/g, '-$1')
     .toLowerCase()
@@ -24,7 +237,7 @@ export function toKebabCase(str: string): string {
 }
 
 // Convert HTML attribute names to React prop names
-export function toReactPropName(attrName: string): string {
+function toReactPropName(attrName: string): string {
   // Special cases
   if (attrName === 'class') return 'className'
   if (attrName === 'for') return 'htmlFor'
@@ -47,97 +260,113 @@ export function toReactPropName(attrName: string): string {
   return attrName
 }
 
+// Extract all expressions from template for pre-evaluation
+function extractExpressions(template: string): string[] {
+  const expressions: Set<string> = new Set()
+  
+  // Extract expressions from text content {expression}
+  let textIndex = 0
+  while (textIndex < template.length) {
+    const exprStart = template.indexOf('{', textIndex)
+    if (exprStart === -1) break
+    const exprEnd = template.indexOf('}', exprStart)
+    if (exprEnd === -1) break
+    const expr = template.substring(exprStart + 1, exprEnd).trim()
+    if (expr) {
+      expressions.add(expr)
+    }
+    textIndex = exprEnd + 1
+  }
+  
+  // Extract expressions from attributes (e.g., attr="{expression}")
+  const attrExprRegex = /="\{([^}]+)\}"/g
+  let match
+  while ((match = attrExprRegex.exec(template)) !== null) {
+    const expr = match[1].trim()
+    if (expr) {
+      expressions.add(expr)
+    }
+  }
+  
+  return Array.from(expressions)
+}
+
+// Evaluate expression using either direct eval or sandbox
+async function evaluateExpressionAsync(
+  expr: string,
+  context: Record<string, any>,
+  unsafeEval: boolean,
+  methods?: Record<string, Function>
+): Promise<any> {
+  try {
+    expr = expr.trim()
+    
+    // Check if expression is a simple method reference (just an identifier)
+    // Methods can't be serialized to sandbox, so handle them on main thread
+    if (methods && /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(expr) && methods[expr]) {
+      // This is a direct method reference, return the method function
+      return methods[expr]
+    }
+    
+    if (unsafeEval) {
+      // Direct evaluation using new Function
+      const paramNames = Object.keys(context).filter(key => 
+        /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(key)
+      )
+      const func = new Function(...paramNames, `return ${expr}`)
+      const paramValues = paramNames.map(name => context[name])
+      return func(...paramValues)
+    } else {
+      // Use iframe sandbox
+      const sandbox = getSandbox()
+      return await sandbox.evaluate(expr, context)
+    }
+  } catch (error) {
+    console.error(`Error evaluating expression "${expr}":`, error)
+    return undefined
+  }
+}
+
+// Synchronous evaluation (for unsafeEval = true)
+function evaluateExpressionSync(expr: string, context: Record<string, any>): any {
+  try {
+    expr = expr.trim()
+    const paramNames = Object.keys(context).filter(key => 
+      /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(key)
+    )
+    const func = new Function(...paramNames, `return ${expr}`)
+    const paramValues = paramNames.map(name => context[name])
+    return func(...paramValues)
+  } catch (error) {
+    console.error(`Error evaluating expression "${expr}":`, error)
+    return undefined
+  }
+}
+
 // Convert DOM nodes to React elements using DOMParser
-export function parseTemplate(
+function parseTemplate(
   template: string,
   model: Record<string, any>,
   methods: Record<string, Function>,
-  imports: Record<string, any>
+  imports: Record<string, any>,
+  unsafeEval: boolean = true,
+  expressionResults?: Map<string, any>
 ): ReactNode {
 
   // Evaluate expressions in {expression} syntax
   function evaluateExpression(expr: string): any {
-    try {
-      expr = expr.trim()
-      
-      // Create a context with model, methods, and imports
-      const context: Record<string, any> = {
-        ...imports,
-        ...methods,
-        ...model, // Model values take precedence
-      }
-      
-      // Debug: log context for complex expressions
-      if (expr.includes('>') || expr.includes('<') || expr.includes('===')) {
-        console.log(`Evaluating expression "${expr}" with model:`, model, 'Context keys:', Object.keys(context))
-      }
-
-      // Check if it's a simple identifier (just a variable name)
-      const simpleIdentifierRegex = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/
-      if (simpleIdentifierRegex.test(expr)) {
-        // First check model directly (highest priority)
-        if (expr in model) {
-          const modelValue = model[expr]
-          // Model values should never be functions (they're data)
-          if (typeof modelValue === 'function') {
-            console.error(`Model key "${expr}" is a function, which is invalid.`)
-            return undefined
-          }
-          return modelValue
-        }
-        // Then check context (for methods, imports)
-        if (expr in context) {
-          const value = context[expr]
-          return value
-        }
-        // If identifier not found anywhere, return undefined
-        return undefined
-      }
-
-      // For complex expressions, use Function constructor with context
-      // Build parameter list from context keys (only valid JS identifiers)
-      const paramNames = Object.keys(context).filter(key => {
-        return /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(key)
-      })
-
-      if (paramNames.length === 0) {
-        // No valid parameters, can't evaluate
-        console.warn('No valid context parameters for expression:', expr, 'Context:', context)
-        return undefined
-      }
-
-      // Check if all variables in expression are in paramNames
-      // Extract variable names from expression (simple heuristic)
-      const exprVars = expr.match(/\b[a-zA-Z_$][a-zA-Z0-9_$]*\b/g) || []
-      const missingVars = exprVars.filter(v => !paramNames.includes(v) && v !== 'true' && v !== 'false' && v !== 'null' && v !== 'undefined')
-      if (missingVars.length > 0) {
-        console.error(`Expression "${expr}" uses variables not in context:`, missingVars, 'Available:', paramNames, 'Model:', model)
-      }
-
-      // Create function that evaluates the expression
-      const func = new Function(
-        ...paramNames,
-        `return ${expr}`
-      )
-
-      // Call with context values in same order
-      const paramValues = paramNames.map(name => context[name])
-      const result = func(...paramValues)
-      
-      // Debug log for condition expressions
-      if (expr.includes('>') || expr.includes('<') || expr.includes('===') || expr.includes('!==')) {
-        console.log(`Expression "${expr}" evaluated:`, result, 'Context keys:', paramNames, 'Model:', model, 'count value:', context['count'])
-        if (result === undefined) {
-          console.error(`Expression "${expr}" returned undefined! Check if all variables are in context.`)
-        }
-      }
-      
-      return result
-    } catch (error) {
-      console.error('Error evaluating expression:', expr, error)
-      // Return the expression as-is if evaluation fails
-      return expr
+    if (!unsafeEval && expressionResults) {
+      // Use pre-evaluated results from sandbox
+      return expressionResults.get(expr) ?? undefined
     }
+    
+    // Synchronous evaluation for unsafeEval = true
+    const context: Record<string, any> = {
+      ...imports,
+      ...methods,
+      ...model,
+    }
+    return evaluateExpressionSync(expr, context)
   }
 
   // Convert DOM node to React element
@@ -289,7 +518,9 @@ export function compileTemplate(config: TemplateConfig): ComponentType {
     const [model, setModel] = useState<Record<string, any>>({})
     const [methods, setMethods] = useState<Record<string, Function>>({})
     const [imports, setImports] = useState<Record<string, any>>({})
+    const [expressionResults, setExpressionResults] = useState<Map<string, any>>(new Map())
     const modelRef = useRef(model)
+    const unsafeEval = config.unsafeEval !== false // default to true
     
     // Keep ref in sync with model
     useEffect(() => {
@@ -316,15 +547,40 @@ export function compileTemplate(config: TemplateConfig): ComponentType {
         Object.keys(config.methods).forEach((methodName) => {
           const methodStr = config.methods![methodName]
           try {
-            // The method string is a function: (model, setModel) => setModel(...)
-            parsedMethods[methodName] = () => {
-              const currentModel = modelRef.current
-              const methodFunc = new Function(
-                'model',
-                'setModel',
-                `return ${methodStr}`
-              )(currentModel, setModel)
-              methodFunc(currentModel, setModel)
+            if (unsafeEval) {
+              // Direct evaluation using new Function
+              parsedMethods[methodName] = () => {
+                const currentModel = modelRef.current
+                const methodFunc = new Function(
+                  'model',
+                  'setModel',
+                  `return ${methodStr}`
+                )(currentModel, setModel)
+                methodFunc(currentModel, setModel)
+              }
+            } else {
+              // For sandbox mode, methods present a challenge: setModel is a React state setter
+              // function that cannot be serialized and passed to the sandbox via postMessage.
+              // 
+              // Options:
+              // 1. Use unsafe eval for methods (they're trusted config) - current approach
+              // 2. Implement message-passing proxy for setModel - more complex but fully sandboxed
+              //
+              // For now, we use option 1: methods are part of the trusted config, so we allow
+              // unsafe eval for them. In a production system, you'd implement option 2 with
+              // a proper message-passing system where the sandbox sends update requests
+              // that the main thread processes.
+              parsedMethods[methodName] = () => {
+                const currentModel = modelRef.current
+                // Note: Using unsafe eval for methods even in sandbox mode
+                // because they're trusted config and need access to setModel
+                const methodFunc = new Function(
+                  'model',
+                  'setModel',
+                  `return ${methodStr}`
+                )(currentModel, setModel)
+                methodFunc(currentModel, setModel)
+              }
             }
           } catch (error) {
             console.error(`Error parsing method ${methodName}:`, error)
@@ -332,7 +588,7 @@ export function compileTemplate(config: TemplateConfig): ComponentType {
         })
         setMethods(parsedMethods)
       }
-    }, [model, config.methods])
+    }, [model, config.methods, unsafeEval])
 
     // Handle imports - use dynamic imports for components
     useEffect(() => {
@@ -374,6 +630,64 @@ export function compileTemplate(config: TemplateConfig): ComponentType {
       }
     }, [config.imports])
 
+    // Evaluate expressions in sandbox when unsafeEval = false
+    useEffect(() => {
+      // Wait for model to be initialized and imports to be loaded (if any)
+      const hasModel = Object.keys(model).length > 0
+      const hasImports = !config.imports || Object.keys(imports).length > 0
+      
+      if (!unsafeEval && hasModel && hasImports) {
+        const evaluateExpressions = async () => {
+          const expressions = extractExpressions(config.view)
+          if (expressions.length === 0) {
+            setExpressionResults(new Map())
+            return
+          }
+
+          // Build context - only include serializable values
+          const context: Record<string, any> = {}
+          
+          // Add model values (primitives, should be serializable)
+          Object.keys(model).forEach(key => {
+            context[key] = model[key]
+          })
+          
+          // Add imports (strings, components - components are functions so will be filtered)
+          Object.keys(imports).forEach(key => {
+            context[key] = imports[key]
+          })
+          
+          // Debug: log context keys
+          console.log('Sandbox evaluation context keys:', Object.keys(context))
+          console.log('Context values:', Object.keys(context).reduce((acc, key) => {
+            acc[key] = typeof context[key]
+            return acc
+          }, {} as Record<string, string>))
+
+          const results = new Map<string, any>()
+          await Promise.all(
+            expressions.map(async (expr) => {
+              try {
+                // Pass methods so method references can be handled on main thread
+                const result = await evaluateExpressionAsync(expr, context, unsafeEval, methods)
+                results.set(expr, result)
+              } catch (error) {
+                console.error(`Error evaluating expression "${expr}":`, error)
+                results.set(expr, undefined)
+              }
+            })
+          )
+
+          setExpressionResults(results)
+        }
+
+        evaluateExpressions()
+      } else if (unsafeEval) {
+        // Clear expression results when using unsafe eval
+        setExpressionResults(new Map())
+      }
+    }, [config.view, model, methods, imports, unsafeEval])
+
     // Don't render if methods are defined but not yet parsed
     if (config.methods && Object.keys(methods).length === 0 && Object.keys(model).length > 0) {
       return React.createElement('div', null, 'Loading methods...')
@@ -403,7 +717,18 @@ export function compileTemplate(config: TemplateConfig): ComponentType {
       }
     }
 
-    const rendered = parseTemplate(config.view, model, methods, imports)
+    // Don't render if expressions are still being evaluated in sandbox
+    if (!unsafeEval && Object.keys(model).length > 0) {
+      const expressions = extractExpressions(config.view)
+      if (expressions.length > 0) {
+        const allEvaluated = expressions.every(expr => expressionResults.has(expr))
+        if (!allEvaluated) {
+          return React.createElement('div', null, 'Evaluating expressions...')
+        }
+      }
+    }
+
+    const rendered = parseTemplate(config.view, model, methods, imports, unsafeEval, expressionResults)
 
     return React.createElement(React.Fragment, null, rendered)
   }

@@ -4,15 +4,16 @@ import { compileTemplate, type TemplateConfig } from '../services/compiler'
 
 interface DeclComponentProps {
   src: string
+  unsafeEval?: boolean
 }
 
-function DeclComponent({ src }: DeclComponentProps) {
+function DeclComponent({ src, unsafeEval }: DeclComponentProps) {
   const [Component, setComponent] = useState<React.ComponentType | null>(null)
 
   useEffect(() => {
-    // Construct path to template: src/templates/{src}.yml
-    // Only allow loading from src/templates directory
-    const templatePath = `./src/templates/${src}.yml`
+    // Construct path to template: /templates/{src}.yml
+    // Templates are in public/templates directory (available in both dev and build)
+    const templatePath = `/templates/${src}.yml`
     
     // Load and parse YAML
     fetch(templatePath)
@@ -24,6 +25,10 @@ function DeclComponent({ src }: DeclComponentProps) {
       })
       .then((text) => {
         const parsed = yaml.load(text) as TemplateConfig
+        // Override unsafeEval from props if provided
+        if (unsafeEval !== undefined) {
+          parsed.unsafeEval = unsafeEval
+        }
         // Compile the template into a React component
         const CompiledComponent = compileTemplate(parsed)
         setComponent(() => CompiledComponent)
@@ -31,7 +36,7 @@ function DeclComponent({ src }: DeclComponentProps) {
       .catch((error) => {
         console.error('Error loading template:', error)
       })
-  }, [src])
+  }, [src, unsafeEval])
 
   if (!Component) {
     return <div>Loading...</div>
