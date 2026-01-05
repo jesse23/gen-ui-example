@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react'
 import yaml from 'js-yaml'
-import { compileTemplate, type TemplateConfig } from '../services/compiler'
+import { compileTemplate, type TemplateConfig, type EngineType } from '../services/compiler'
 
 interface DeclComponentProps {
   src: string
-  unsafeEval?: boolean
+  engineType?: EngineType
 }
 
-function DeclComponent({ src, unsafeEval }: DeclComponentProps) {
+function DeclComponent({ src, engineType }: DeclComponentProps) {
   const [Component, setComponent] = useState<React.ComponentType | null>(null)
 
   useEffect(() => {
@@ -25,9 +25,9 @@ function DeclComponent({ src, unsafeEval }: DeclComponentProps) {
       })
       .then((text) => {
         const parsed = yaml.load(text) as TemplateConfig
-        // Override unsafeEval from props if provided
-        if (unsafeEval !== undefined) {
-          parsed.unsafeEval = unsafeEval
+        // Override engineType from props if provided
+        if (engineType !== undefined) {
+          parsed.engineType = engineType
         }
         // Compile the template into a React component
         const CompiledComponent = compileTemplate(parsed)
@@ -36,7 +36,7 @@ function DeclComponent({ src, unsafeEval }: DeclComponentProps) {
       .catch((error) => {
         console.error('Error loading template:', error)
       })
-  }, [src, unsafeEval])
+  }, [src, engineType])
 
   if (!Component) {
     return <div>Loading...</div>

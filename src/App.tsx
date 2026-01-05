@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import DeclComponent from './components/DeclComponent'
+import { ENGINE_TYPES, type EngineType } from './services/compiler'
 import './App.css'
 
 function App() {
-  const [unsafeEval, setUnsafeEval] = useState(false)
+  const [engineType, setEngineType] = useState<EngineType>(ENGINE_TYPES.INLINE)
 
   return (
     <div>
@@ -15,23 +16,31 @@ function App() {
         alignItems: 'center',
         gap: '10px'
       }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={unsafeEval}
-            onChange={(e) => setUnsafeEval(e.target.checked)}
-          />
-          <span>Use unsafe eval (unchecked = iframe sandbox mode)</span>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span>Engine Type:</span>
+          <select
+            value={engineType}
+            onChange={(e) => setEngineType(e.target.value as EngineType)}
+            style={{
+              padding: '4px 8px',
+              fontSize: '14px',
+              border: '1px solid #ccc',
+              borderRadius: '4px'
+            }}
+          >
+            <option value={ENGINE_TYPES.INLINE}>Inline (Direct Evaluation)</option>
+            <option value={ENGINE_TYPES.SANDBOX}>Sandbox (Iframe Isolation)</option>
+          </select>
         </label>
         <span style={{ 
           fontSize: '12px', 
           color: '#666',
           fontStyle: 'italic'
         }}>
-          {unsafeEval ? 'Direct evaluation' : 'Sandboxed evaluation'}
+          {engineType === ENGINE_TYPES.INLINE ? 'Direct evaluation' : 'Sandboxed evaluation'}
         </span>
       </div>
-      <DeclComponent src="example" unsafeEval={unsafeEval} />
+      <DeclComponent src="example" engineType={engineType} />
     </div>
   )
 }
