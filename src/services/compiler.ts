@@ -327,46 +327,25 @@ async function evaluateExpressionAsync(
   }
 }
 
-// Synchronous evaluation (for unsafeEval = true)
-function evaluateExpressionSync(expr: string, context: Record<string, any>): any {
-  try {
-    expr = expr.trim()
-    const paramNames = Object.keys(context).filter(key => 
-      /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(key)
-    )
-    const func = new Function(...paramNames, `return ${expr}`)
-    const paramValues = paramNames.map(name => context[name])
-    return func(...paramValues)
-  } catch (error) {
-    console.error(`Error evaluating expression "${expr}":`, error)
-    return undefined
-  }
-}
-
 // Convert DOM nodes to React elements using DOMParser
 function parseTemplate(
   template: string,
-  model: Record<string, any>,
-  methods: Record<string, Function>,
+  _model: Record<string, any>, // Unused - expressions are pre-evaluated
+  _methods: Record<string, Function>, // Unused - expressions are pre-evaluated
   imports: Record<string, any>,
-  unsafeEval: boolean = true,
+  _unsafeEval: boolean = true, // Unused - expressions are pre-evaluated
   expressionResults?: Map<string, any>
 ): ReactNode {
 
   // Evaluate expressions in {expression} syntax
+  // All expressions are now pre-evaluated asynchronously, so we just look up results
   function evaluateExpression(expr: string): any {
-    if (!unsafeEval && expressionResults) {
-      // Use pre-evaluated results from sandbox
+    if (expressionResults) {
+      // Use pre-evaluated results (works for both unsafeEval modes)
       return expressionResults.get(expr) ?? undefined
     }
-    
-    // Synchronous evaluation for unsafeEval = true
-    const context: Record<string, any> = {
-      ...imports,
-      ...methods,
-      ...model,
-    }
-    return evaluateExpressionSync(expr, context)
+    // Fallback if results not ready yet
+    return undefined
   }
 
   // Convert DOM node to React element
@@ -630,13 +609,13 @@ export function compileTemplate(config: TemplateConfig): ComponentType {
       }
     }, [config.imports])
 
-    // Evaluate expressions in sandbox when unsafeEval = false
+    // Evaluate expressions asynchronously for both modes
     useEffect(() => {
       // Wait for model to be initialized and imports to be loaded (if any)
       const hasModel = Object.keys(model).length > 0
       const hasImports = !config.imports || Object.keys(imports).length > 0
       
-      if (!unsafeEval && hasModel && hasImports) {
+      if (hasModel && hasImports) {
         const evaluateExpressions = async () => {
           const expressions = extractExpressions(config.view)
           if (expressions.length === 0) {
@@ -658,11 +637,13 @@ export function compileTemplate(config: TemplateConfig): ComponentType {
           })
           
           // Debug: log context keys
-          console.log('Sandbox evaluation context keys:', Object.keys(context))
-          console.log('Context values:', Object.keys(context).reduce((acc, key) => {
-            acc[key] = typeof context[key]
-            return acc
-          }, {} as Record<string, string>))
+          if (!unsafeEval) {
+            console.log('Sandbox evaluation context keys:', Object.keys(context))
+            console.log('Context values:', Object.keys(context).reduce((acc, key) => {
+              acc[key] = typeof context[key]
+              return acc
+            }, {} as Record<string, string>))
+          }
 
           const results = new Map<string, any>()
           await Promise.all(
@@ -682,9 +663,6 @@ export function compileTemplate(config: TemplateConfig): ComponentType {
         }
 
         evaluateExpressions()
-      } else if (unsafeEval) {
-        // Clear expression results when using unsafe eval
-        setExpressionResults(new Map())
       }
     }, [config.view, model, methods, imports, unsafeEval])
 
@@ -717,8 +695,8 @@ export function compileTemplate(config: TemplateConfig): ComponentType {
       }
     }
 
-    // Don't render if expressions are still being evaluated in sandbox
-    if (!unsafeEval && Object.keys(model).length > 0) {
+    // Don't render if expressions are still being evaluated
+    if (Object.keys(model).length > 0) {
       const expressions = extractExpressions(config.view)
       if (expressions.length > 0) {
         const allEvaluated = expressions.every(expr => expressionResults.has(expr))
