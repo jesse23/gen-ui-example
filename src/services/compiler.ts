@@ -13,6 +13,7 @@ class IframeSandbox {
   private iframe: HTMLIFrameElement | null = null
   private ready: boolean = false
   private pendingRequests: Map<number, { resolve: (value: any) => void; reject: (error: any) => void }> = new Map()
+  private methodCallbacks: Map<number, (modelUpdate: Record<string, any>) => void> = new Map()
   private requestId: number = 0
   private messageHandler: (event: MessageEvent) => void
 
@@ -39,11 +40,11 @@ class IframeSandbox {
     window.addEventListener('message', function(event) {
       // Accept messages from parent (sandbox has null origin, so we can't check origin)
       // In production, you'd want additional validation here
-      if (!event.data || event.data.type !== 'SANDBOX_EVAL') {
+      if (!event.data) {
         return;
       }
       
-      const { type, id, code, context } = event.data;
+      const { type, id, code, context, methodCode, model } = event.data;
       
       if (type === 'SANDBOX_EVAL') {
         try {
@@ -83,6 +84,50 @@ class IframeSandbox {
             error: errorMsg
           }, '*');
         }
+      } else if (type === 'SANDBOX_METHOD_EVAL') {
+        try {
+          // Evaluate method in sandbox
+          // Method signature: (model, setModel) => void
+          // setModel is provided as a function that directly posts messages to the host
+          // This approach allows any function to communicate with the host via postMessage
+          // Note: This is synchronous from the sandbox's perspective, but the host applies
+          // updates asynchronously. Side effects that depend on immediate state updates may not work.
+          const setModelCallback = function(update) {
+            // Handle both object and function forms: setModel(newModel) or setModel(prev => newModel)
+            let modelUpdate;
+            if (typeof update === 'function') {
+              modelUpdate = update(model);
+            } else {
+              modelUpdate = update;
+            }
+            
+            // Directly post message to host - no proxy needed
+            window.parent.postMessage({
+              type: 'SANDBOX_SET_MODEL',
+              id: id,
+              modelUpdate: modelUpdate
+            }, '*');
+          };
+          
+          // Evaluate the method function
+          const methodFunc = new Function('model', 'setModel', \`return \${methodCode}\`)(model, setModelCallback);
+          
+          // Call the method - it will call setModelCallback which posts to host
+          methodFunc(model, setModelCallback);
+          
+          // Signal that method execution completed (setModel calls are handled separately)
+          window.parent.postMessage({
+            type: 'SANDBOX_METHOD_RESULT',
+            id: id,
+            error: null
+          }, '*');
+        } catch (error) {
+          window.parent.postMessage({
+            type: 'SANDBOX_METHOD_RESULT',
+            id: id,
+            error: error.message
+          }, '*');
+        }
       }
     });
     
@@ -120,6 +165,30 @@ class IframeSandbox {
         }
       }
     }
+
+    if (event.data.type === 'SANDBOX_SET_MODEL') {
+      // Handle direct setModel calls from sandbox
+      // This allows any function in the sandbox to communicate with the host via postMessage
+      const { id, modelUpdate } = event.data
+      const callback = this.methodCallbacks.get(id)
+      if (callback) {
+        callback(modelUpdate)
+      }
+    }
+
+    if (event.data.type === 'SANDBOX_METHOD_RESULT') {
+      const { id, error } = event.data
+      const request = this.pendingRequests.get(id)
+      if (request) {
+        this.pendingRequests.delete(id)
+        this.methodCallbacks.delete(id) // Clean up callback
+        if (error) {
+          request.reject(new Error(error))
+        } else {
+          request.resolve(null) // Method execution completed
+        }
+      }
+    }
   }
 
   async evaluate(code: string, context: Record<string, any>): Promise<any> {
@@ -149,6 +218,80 @@ class IframeSandbox {
 
       this.sendEvaluationRequest(code, context, resolve, reject)
     })
+  }
+
+  async evaluateMethod(
+    methodCode: string,
+    model: Record<string, any>,
+    setModelCallback: (modelUpdate: Record<string, any>) => void
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!this.iframe || !this.iframe.contentWindow) {
+        reject(new Error('Sandbox iframe not initialized'))
+        return
+      }
+
+      // Wait for sandbox to be ready
+      if (!this.ready) {
+        const checkReady = setInterval(() => {
+          if (this.ready) {
+            clearInterval(checkReady)
+            this.sendMethodEvaluationRequest(methodCode, model, setModelCallback, resolve, reject)
+          }
+        }, 10)
+        // Timeout after 5 seconds
+        setTimeout(() => {
+          clearInterval(checkReady)
+          if (!this.ready) {
+            reject(new Error('Sandbox initialization timeout'))
+          }
+        }, 5000)
+        return
+      }
+
+      this.sendMethodEvaluationRequest(methodCode, model, setModelCallback, resolve, reject)
+    })
+  }
+
+  private sendMethodEvaluationRequest(
+    methodCode: string,
+    model: Record<string, any>,
+    setModelCallback: (modelUpdate: Record<string, any>) => void,
+    resolve: () => void,
+    reject: (error: any) => void
+  ) {
+    const id = this.requestId++
+    this.pendingRequests.set(id, { resolve, reject })
+    this.methodCallbacks.set(id, setModelCallback) // Store callback for setModel calls
+
+    // Serialize model (should be serializable)
+    const serializableModel: Record<string, any> = {}
+    Object.keys(model).forEach(key => {
+      const value = model[key]
+      if (typeof value === 'function' || typeof value === 'symbol') {
+        return // Skip non-serializable
+      }
+      serializableModel[key] = value
+    })
+
+    this.iframe!.contentWindow!.postMessage(
+      {
+        type: 'SANDBOX_METHOD_EVAL',
+        id,
+        methodCode,
+        model: serializableModel
+      },
+      '*'
+    )
+
+    // Timeout after 10 seconds
+    setTimeout(() => {
+      if (this.pendingRequests.has(id)) {
+        this.pendingRequests.delete(id)
+        this.methodCallbacks.delete(id) // Clean up callback
+        reject(new Error('Method evaluation timeout'))
+      }
+    }, 10000)
   }
 
   private sendEvaluationRequest(
@@ -538,27 +681,20 @@ export function compileTemplate(config: TemplateConfig): ComponentType {
                 methodFunc(currentModel, setModel)
               }
             } else {
-              // For sandbox mode, methods present a challenge: setModel is a React state setter
-              // function that cannot be serialized and passed to the sandbox via postMessage.
-              // 
-              // Options:
-              // 1. Use unsafe eval for methods (they're trusted config) - current approach
-              // 2. Implement message-passing proxy for setModel - more complex but fully sandboxed
-              //
-              // For now, we use option 1: methods are part of the trusted config, so we allow
-              // unsafe eval for them. In a production system, you'd implement option 2 with
-              // a proper message-passing system where the sandbox sends update requests
-              // that the main thread processes.
-              parsedMethods[methodName] = () => {
+              // For sandbox mode, evaluate methods in the iframe sandbox
+              // setModel is provided as a callback that the sandbox calls directly via postMessage
+              // This approach allows any function to communicate with the host via postMessage
+              // Note: Updates are applied asynchronously. Side effects that depend on immediate
+              // state updates may not work as expected.
+              parsedMethods[methodName] = async () => {
                 const currentModel = modelRef.current
-                // Note: Using unsafe eval for methods even in sandbox mode
-                // because they're trusted config and need access to setModel
-                const methodFunc = new Function(
-                  'model',
-                  'setModel',
-                  `return ${methodStr}`
-                )(currentModel, setModel)
-                methodFunc(currentModel, setModel)
+                try {
+                  const sandbox = getSandbox()
+                  // Evaluate method in sandbox - setModel calls will be handled via postMessage callback
+                  await sandbox.evaluateMethod(methodStr, currentModel, setModel)
+                } catch (error) {
+                  console.error(`Error executing method ${methodName} in sandbox:`, error)
+                }
               }
             }
           } catch (error) {
