@@ -43,7 +43,7 @@ function App() {
            'Static blob compilation'}
         </span>
       </div>
-      <DeclComponent src="example" compilationStrategy={compilationStrategy} />
+      <DeclComponent src="SamplePanel" compilationStrategy={compilationStrategy} />
     </div>
   )
 }
