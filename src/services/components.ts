@@ -5,9 +5,24 @@
 // Map component names to their dynamic import functions
 // Using explicit string literals so Vite can statically analyze and code-split
 // All component names must be in PascalCase
-export const componentImportMap: Record<string, () => Promise<any>> = {
+const componentImportMap: Record<string, () => Promise<any>> = {
   ExistWhen: () => import('../components/ExistWhen'),
   DeclComponent: () => import('../components/DeclComponent'),
+}
+
+/**
+ * Register a component dynamically.
+ * Allows adding components to the registry at runtime.
+ * 
+ * @param name - Component name in PascalCase (e.g., "MyComponent")
+ * @param component - The component to register
+ * 
+ * @example
+ * registerComponent('MyComponent', MyComponent)
+ * registerComponent('MyComponent', Promise.resolve(MyComponent))
+ */
+export function registerComponent(name: string, component: any): void {
+  componentImportMap[name] = () => Promise.resolve(component)
 }
 
 /**

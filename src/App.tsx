@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import DeclComponent from './components/DeclComponent'
+import DeclBlobComponent from './components/DeclBlobComponent'
 import { ENGINE_TYPES, type EngineType } from './services/compiler'
 import './App.css'
 
@@ -41,6 +42,7 @@ function App() {
         </span>
       </div>
       <DeclComponent src="example" engineType={engineType} />
+      <DeclBlobComponent src="example"/>
     </div>
   )
 }

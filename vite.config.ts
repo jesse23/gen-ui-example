@@ -16,7 +16,7 @@ function cspHeadersPlugin(): Plugin {
           )
         } else {
           // Default CSP for main page - strict, no unsafe-eval
-          res.setHeader('Content-Security-Policy', "script-src 'self'")
+          res.setHeader('Content-Security-Policy', "script-src 'self' blob:")
         }
         next()
       })
