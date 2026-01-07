@@ -1,25 +1,85 @@
-import React, { useState, useEffect, useRef, type ReactNode, type ComponentType } from 'react'
+/**
+ * Template Compiler Service
+ * 
+ * This module provides a unified API for compiling component definitions (YAML templates)
+ * into React components. It supports three compilation strategies:
+ * 
+ * 1. INLINE: Direct evaluation using JavaScript's Function constructor
+ *    - Fast, but less secure (runs in main thread)
+ *    - Good for trusted templates
+ * 
+ * 2. SANDBOX: Isolated evaluation in an iframe sandbox
+ *    - More secure, isolated execution context
+ *    - Uses postMessage for communication
+ *    - Good for untrusted templates
+ * 
+ * 3. BLOB: Static compilation to JavaScript blob
+ *    - Pre-compiles template to JavaScript code
+ *    - All expressions are inlined at compile time
+ *    - No runtime expression evaluation
+ *    - Best performance, but requires blob URL support
+ * 
+ * Function Call Tree:
+ * ===================
+ * 
+ * compileTemplate (exported main API)
+ *   ├─> compileTemplateToJsBlobComponent (if compilationStrategy === BLOB)
+ *   │    ├─> compileTemplateToJS
+ *   │    │    ├─> toPascalCase (helper)
+ *   │    │    └─> toReactPropName (helper)
+ *   │    ├─> Creates blob and imports it
+ *   │    └─> createCompiledComponent (from blob)
+ *   │         └─> createComponent (component helper)
+ *   │              └─> (via pre-compiled callbacks from blob code)
+ *   │                   ├─> renderTemplate callback (pre-compiled JS code)
+ *   │                   └─> parseActions callback (pre-compiled JS code)
+ *   │                   (no evaluateExpressions - expressions are pre-compiled)
+ *   │
+ *   └─> compileTemplateToInlineComponent (if compilationStrategy === INLINE | SANDBOX)
+ *        └─> createComponent (component helper)
+ *             └─> (via callbacks passed to createComponent)
+ *                  ├─> renderTemplate callback (inline template parsing)
+ *                  │    ├─> toReactPropName (helper)
+ *                  │    ├─> toPascalCase (helper)
+ *                  │    └─> toKebabCase (helper)
+ *                  ├─> parseActions callback
+ *                  │    └─> getJSEngine -> engine.executeAction
+ *                  │         ├─> InlineJsEngine (JS engine)
+ *                  │         └─> IframeSandbox (JS engine)
+ *                  └─> evaluateExpressions callback
+ *                       ├─> extractExpressions (helper)
+ *                       └─> evaluateExpressionAsync (helper)
+ *                            └─> getJSEngine -> engine.evaluateExpression
+ *                                 ├─> InlineJsEngine (JS engine)
+ *                                 └─> IframeSandbox (JS engine)
+ * 
+ * @module compiler
+ */
+
+import React, { type ReactNode, type ComponentType } from 'react'
 import { loadComponent } from './components'
 
-// Engine type constants
-export const ENGINE_TYPES = {
+// ============================================================================
+// Types and Constants
+// ============================================================================
+
+export const COMPILATION_STRATEGIES = {
   INLINE: 'inline',
   SANDBOX: 'sandbox',
   BLOB: 'blob'
 } as const
 
-export type EngineType = typeof ENGINE_TYPES[keyof typeof ENGINE_TYPES]
+export type CompilationStrategy = typeof COMPILATION_STRATEGIES[keyof typeof COMPILATION_STRATEGIES]
 
-export interface TemplateConfig {
+export interface ComponentDefinition {
   view: string
   data: Record<string, { type: string; initial: any }>
   actions?: Record<string, string>
   imports?: Array<Record<string, string>>
-  engineType?: EngineType
+  compilationStrategy?: CompilationStrategy
 }
 
-// JavaScript engine interface for evaluating expressions and executing actions
-export interface JSEngine {
+interface JSEngine {
   evaluateExpression(expr: string, context: Record<string, any>): Promise<any>
   executeAction(
     code: string,
@@ -28,12 +88,207 @@ export interface JSEngine {
   ): Promise<void>
 }
 
-// Inline JavaScript engine - uses direct evaluation with new Function
+// ============================================================================
+// Helpers
+// ============================================================================
+
+function serializeForPostMessage(obj: Record<string, any>): Record<string, any> {
+  const serializable: Record<string, any> = {}
+  Object.keys(obj).forEach(key => {
+    const value = obj[key]
+    if (typeof value !== 'function' && typeof value !== 'symbol') {
+      serializable[key] = value
+    }
+  })
+  return serializable
+}
+
+function waitForSandboxReady(
+  getReady: () => boolean,
+  onReady: () => void,
+  onTimeout: () => void,
+  timeoutMs: number = 5000
+): void {
+  if (getReady()) {
+    onReady()
+    return
+  }
+
+  const checkReady = setInterval(() => {
+    if (getReady()) {
+      clearInterval(checkReady)
+      onReady()
+    }
+  }, 10)
+
+  setTimeout(() => {
+    clearInterval(checkReady)
+    if (!getReady()) {
+      onTimeout()
+    }
+  }, timeoutMs)
+}
+
+
+function resolveComponent(tagName: string, imports: Record<string, any>): any {
+  if (!tagName.includes('-') && imports[tagName] === undefined) {
+    return tagName
+  }
+
+  const component = imports[tagName] || imports[toPascalCase(tagName)]
+  if (component && typeof component === 'function') {
+    return component
+  }
+
+  if (tagName.includes('-')) {
+    console.warn(`Component "${tagName}" not found or not loaded yet. Available imports:`, Object.keys(imports))
+    return null
+  }
+
+  return tagName
+}
+
+function toPascalCase(str: string): string {
+  return str
+    .split('-')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join('')
+}
+
+function toKebabCase(str: string): string {
+  return str
+    .replace(/([A-Z])/g, '-$1')
+    .toLowerCase()
+    .replace(/^-/, '')
+}
+
+function toReactPropName(attrName: string): string {
+  if (attrName === 'class') return 'className'
+  if (attrName === 'for') return 'htmlFor'
+
+  if (attrName.startsWith('on') && attrName.length > 2) {
+    return 'on' + attrName.charAt(2).toUpperCase() + attrName.slice(3)
+  }
+
+  if (attrName.startsWith('data-') || attrName.startsWith('aria-')) {
+    return attrName
+  }
+
+  if (attrName.includes('-')) {
+    return attrName.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())
+  }
+
+  return attrName
+}
+
+function extractExpressions(template: string): string[] {
+  const expressions: Set<string> = new Set()
+
+  let textIndex = 0
+  while (textIndex < template.length) {
+    const exprStart = template.indexOf('{', textIndex)
+    if (exprStart === -1) break
+    const exprEnd = template.indexOf('}', exprStart)
+    if (exprEnd === -1) break
+    const expr = template.substring(exprStart + 1, exprEnd).trim()
+    if (expr) {
+      expressions.add(expr)
+    }
+    textIndex = exprEnd + 1
+  }
+
+  const attrExprRegex = /="\{([^}]+)\}"/g
+  let match
+  while ((match = attrExprRegex.exec(template)) !== null) {
+    const expr = match[1].trim()
+    if (expr) {
+      expressions.add(expr)
+    }
+  }
+
+  return Array.from(expressions)
+}
+
+async function evaluateExpressionAsync(
+  expr: string,
+  context: Record<string, any>,
+  strategy: CompilationStrategy,
+  actions?: Record<string, Function>
+): Promise<any> {
+  try {
+    expr = expr.trim()
+
+    if (actions && /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(expr) && actions[expr]) {
+      return actions[expr]
+    }
+
+    const engine = getJSEngine(strategy)
+    return await engine.evaluateExpression(expr, context)
+  } catch (error) {
+    console.error(`Error evaluating expression "${expr}":`, error)
+    return undefined
+  }
+}
+
+function parseTextWithExpressions(
+  text: string,
+  evaluateExpression: (expr: string) => any,
+  key: number = 0
+): ReactNode {
+  if (!text.includes('{')) {
+    return text || null
+  }
+
+  const parts: ReactNode[] = []
+  let textIndex = 0
+  while (textIndex < text.length) {
+    const exprStart = text.indexOf('{', textIndex)
+    if (exprStart === -1) {
+      parts.push(text.substring(textIndex))
+      break
+    }
+    if (exprStart > textIndex) {
+      parts.push(text.substring(textIndex, exprStart))
+    }
+    const exprEnd = text.indexOf('}', exprStart)
+    if (exprEnd === -1) break
+    const expr = text.substring(exprStart + 1, exprEnd)
+    const evaluated = evaluateExpression(expr)
+    if (typeof evaluated !== 'function') {
+      parts.push(evaluated == null ? '' : String(evaluated))
+    } else {
+      parts.push('')
+    }
+    textIndex = exprEnd + 1
+  }
+  return React.createElement(React.Fragment, { key }, ...parts)
+}
+
+function parseAttributes(
+  element: Element,
+  evaluateExpression: (expr: string) => any
+): Record<string, any> {
+  const attrs: Record<string, any> = {}
+  Array.from(element.attributes).forEach((attr) => {
+    const reactName = toReactPropName(attr.name)
+    let value: any = attr.value
+    if (value.startsWith('{') && value.endsWith('}')) {
+      value = evaluateExpression(value.slice(1, -1))
+    }
+    attrs[reactName] = value
+  })
+  return attrs
+}
+
+// ============================================================================
+// JS Engine
+// ============================================================================
+
 class InlineJsEngine implements JSEngine {
   async evaluateExpression(expr: string, context: Record<string, any>): Promise<any> {
     try {
       expr = expr.trim()
-      const paramNames = Object.keys(context).filter(key => 
+      const paramNames = Object.keys(context).filter(key =>
         /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(key)
       )
       const func = new Function(...paramNames, `return ${expr}`)
@@ -53,7 +308,7 @@ class InlineJsEngine implements JSEngine {
     try {
       const paramNames = ['data', 'setData']
       const paramValues = [data, setData]
-      
+
       const actionFunc = new Function(...paramNames, `return ${code}`)(...paramValues)
       actionFunc(...paramValues)
     } catch (error) {
@@ -63,7 +318,6 @@ class InlineJsEngine implements JSEngine {
   }
 }
 
-// Iframe sandbox manager for safe code evaluation
 class IframeSandbox implements JSEngine {
   private iframe: HTMLIFrameElement | null = null
   private ready: boolean = false
@@ -78,18 +332,11 @@ class IframeSandbox implements JSEngine {
   }
 
   private initialize() {
-    // Create iframe with sandbox attribute for null origin isolation
     this.iframe = document.createElement('iframe')
     this.iframe.setAttribute('sandbox', 'allow-scripts')
     this.iframe.style.display = 'none'
-    
-    // Load sandbox from external file to comply with CSP script-src 'self'
-    // The sandbox.html file loads sandbox.js which contains the evaluation logic
-    // This avoids inline scripts which are blocked by strict CSP
     this.iframe.src = '/sandbox.html'
     document.body.appendChild(this.iframe)
-
-    // Set up message listener
     window.addEventListener('message', this.messageHandler)
   }
 
@@ -113,12 +360,9 @@ class IframeSandbox implements JSEngine {
     }
 
     if (event.data.type === 'SANDBOX_INVOKE_HOST') {
-      // Handle generic callback invocations from sandbox
-      // This allows any function in the sandbox to communicate with the host via postMessage
       const { id, callbackName, args } = event.data
       const callbacks = this.methodCallbacks.get(id)
       if (callbacks && callbacks[callbackName]) {
-        // Call the appropriate callback with the provided arguments
         callbacks[callbackName](...args)
       }
     }
@@ -128,42 +372,41 @@ class IframeSandbox implements JSEngine {
       const request = this.pendingRequests.get(id)
       if (request) {
         this.pendingRequests.delete(id)
-        this.methodCallbacks.delete(id) // Clean up callback
+        this.methodCallbacks.delete(id)
         if (error) {
           request.reject(new Error(error))
         } else {
-          request.resolve(null) // Action execution completed
+          request.resolve(null)
         }
       }
     }
   }
 
-  async evaluateExpression(expr: string, context: Record<string, any>): Promise<any> {
+  private async ensureReady<T>(callback: () => Promise<T>): Promise<T> {
+    if (!this.iframe?.contentWindow) {
+      throw new Error('Sandbox iframe not initialized')
+    }
+
     return new Promise((resolve, reject) => {
-      if (!this.iframe || !this.iframe.contentWindow) {
-        reject(new Error('Sandbox iframe not initialized'))
-        return
-      }
-
-      // Wait for sandbox to be ready
-      if (!this.ready) {
-        const checkReady = setInterval(() => {
-          if (this.ready) {
-            clearInterval(checkReady)
-            this.sendEvaluationRequest(expr, context, resolve, reject)
+      waitForSandboxReady(
+        () => this.ready,
+        async () => {
+          try {
+            resolve(await callback())
+          } catch (error) {
+            reject(error)
           }
-        }, 10)
-        // Timeout after 5 seconds
-        setTimeout(() => {
-          clearInterval(checkReady)
-          if (!this.ready) {
-            reject(new Error('Sandbox initialization timeout'))
-          }
-        }, 5000)
-        return
-      }
+        },
+        () => reject(new Error('Sandbox initialization timeout'))
+      )
+    })
+  }
 
-      this.sendEvaluationRequest(expr, context, resolve, reject)
+  async evaluateExpression(expr: string, context: Record<string, any>): Promise<any> {
+    return this.ensureReady(() => {
+      return new Promise((resolve, reject) => {
+        this.sendEvaluationRequest(expr, context, resolve, reject)
+      })
     })
   }
 
@@ -172,32 +415,21 @@ class IframeSandbox implements JSEngine {
     data: Record<string, any>,
     setData: (update: any) => void
   ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.iframe || !this.iframe.contentWindow) {
-        reject(new Error('Sandbox iframe not initialized'))
-        return
-      }
-
-      // Wait for sandbox to be ready
-      if (!this.ready) {
-        const checkReady = setInterval(() => {
-          if (this.ready) {
-            clearInterval(checkReady)
-            this.sendActionExecutionRequest(code, data, setData, resolve, reject)
-          }
-        }, 10)
-        // Timeout after 5 seconds
-        setTimeout(() => {
-          clearInterval(checkReady)
-          if (!this.ready) {
-            reject(new Error('Sandbox initialization timeout'))
-          }
-        }, 5000)
-        return
-      }
-
-      this.sendActionExecutionRequest(code, data, setData, resolve, reject)
+    return this.ensureReady(() => {
+      return new Promise((resolve, reject) => {
+        this.sendActionExecutionRequest(code, data, setData, resolve, reject)
+      })
     })
+  }
+
+  private setupTimeout(id: number, timeoutMs: number, onTimeout: () => void): void {
+    setTimeout(() => {
+      if (this.pendingRequests.has(id)) {
+        this.pendingRequests.delete(id)
+        this.methodCallbacks.delete(id)
+        onTimeout()
+      }
+    }, timeoutMs)
   }
 
   private sendActionExecutionRequest(
@@ -209,37 +441,19 @@ class IframeSandbox implements JSEngine {
   ) {
     const id = this.requestId++
     this.pendingRequests.set(id, { resolve, reject })
-    // Store setData callback for state updates
     this.methodCallbacks.set(id, { setData })
-
-    // Serialize data (should be serializable)
-    const serializableData: Record<string, any> = {}
-    Object.keys(data).forEach(key => {
-      const value = data[key]
-      if (typeof value === 'function' || typeof value === 'symbol') {
-        return // Skip non-serializable
-      }
-      serializableData[key] = value
-    })
 
     this.iframe!.contentWindow!.postMessage(
       {
         type: 'SANDBOX_ACTION_EVAL',
         id,
         actionCode,
-        data: serializableData
+        data: serializeForPostMessage(data)
       },
       '*'
     )
 
-    // Timeout after 10 seconds
-    setTimeout(() => {
-      if (this.pendingRequests.has(id)) {
-        this.pendingRequests.delete(id)
-        this.methodCallbacks.delete(id) // Clean up callback
-        reject(new Error('Action execution timeout'))
-      }
-    }, 10000)
+    this.setupTimeout(id, 10000, () => reject(new Error('Action execution timeout')))
   }
 
   private sendEvaluationRequest(
@@ -251,44 +465,17 @@ class IframeSandbox implements JSEngine {
     const id = this.requestId++
     this.pendingRequests.set(id, { resolve, reject })
 
-    // Serialize context - postMessage uses structured cloning
-    // Filter out non-serializable values (functions, symbols, etc.)
-    const serializableContext: Record<string, any> = {}
-    Object.keys(context).forEach(key => {
-      const value = context[key]
-      
-      // Skip functions (can't be serialized via postMessage)
-      if (typeof value === 'function') {
-        return
-      }
-      
-      // Skip symbols
-      if (typeof value === 'symbol') {
-        return
-      }
-      
-      // All other types should be serializable via structured cloning
-      // (primitives, plain objects, arrays, etc.)
-      serializableContext[key] = value
-    })
-
     this.iframe!.contentWindow!.postMessage(
       {
         type: 'SANDBOX_EVAL',
         id,
         code,
-        context: serializableContext
+        context: serializeForPostMessage(context)
       },
       '*'
     )
 
-    // Timeout after 10 seconds
-    setTimeout(() => {
-      if (this.pendingRequests.has(id)) {
-        this.pendingRequests.delete(id)
-        reject(new Error('Evaluation timeout'))
-      }
-    }, 10000)
+    this.setupTimeout(id, 10000, () => reject(new Error('Evaluation timeout')))
   }
 
   destroy() {
@@ -301,482 +488,503 @@ class IframeSandbox implements JSEngine {
   }
 }
 
-// Singleton engine instances
-const engineInstances: Map<EngineType, JSEngine> = new Map()
-
-// Engine type map (blob doesn't use JSEngine, it's handled separately)
-const engineMap: Record<Exclude<EngineType, 'blob'>, () => JSEngine> = {
-  [ENGINE_TYPES.INLINE]: () => new InlineJsEngine(),
-  [ENGINE_TYPES.SANDBOX]: () => new IframeSandbox()
+const engineInstances: Map<CompilationStrategy, JSEngine> = new Map()
+const engineMap: Record<Exclude<CompilationStrategy, 'blob'>, () => JSEngine> = {
+  [COMPILATION_STRATEGIES.INLINE]: () => new InlineJsEngine(),
+  [COMPILATION_STRATEGIES.SANDBOX]: () => new IframeSandbox()
 }
 
-// Factory function to get the appropriate JS engine based on engineType
-function getJSEngine(engineType: EngineType = ENGINE_TYPES.INLINE): JSEngine {
-  if (engineType === ENGINE_TYPES.BLOB) {
-    throw new Error('BLOB engine type does not use JSEngine - it uses static compilation instead')
+function getJSEngine(strategy: CompilationStrategy = COMPILATION_STRATEGIES.INLINE): JSEngine {
+  if (strategy === COMPILATION_STRATEGIES.BLOB) {
+    throw new Error('BLOB compilation strategy does not use JSEngine - it uses static compilation instead')
   }
-  if (!engineInstances.has(engineType)) {
-    const engine = engineMap[engineType as Exclude<EngineType, 'blob'>]()
-    engineInstances.set(engineType, engine)
+  if (!engineInstances.has(strategy)) {
+    const engine = engineMap[strategy as Exclude<CompilationStrategy, 'blob'>]()
+    engineInstances.set(strategy, engine)
   }
-  return engineInstances.get(engineType)!
+  return engineInstances.get(strategy)!
 }
 
-// Convert kebab-case to PascalCase for component names
-function toPascalCase(str: string): string {
-  return str
-    .split('-')
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join('')
+// ============================================================================
+// Component Helper
+// ============================================================================
+
+function initializeDataFromConfig(dataConfig: Record<string, { type: string; initial: any }> | undefined): Record<string, any> {
+  const initialData: Record<string, any> = {}
+  if (dataConfig) {
+    Object.keys(dataConfig).forEach((key) => {
+      initialData[key] = dataConfig[key].initial
+    })
+  }
+  return initialData
 }
 
-// Convert PascalCase to kebab-case
-function toKebabCase(str: string): string {
-  return str
-    .replace(/([A-Z])/g, '-$1')
-    .toLowerCase()
-    .replace(/^-/, '') // Remove leading dash if present
-}
-
-// Convert HTML attribute names to React prop names
-function toReactPropName(attrName: string): string {
-  // Special cases
-  if (attrName === 'class') return 'className'
-  if (attrName === 'for') return 'htmlFor'
-  
-  // Convert event handlers: onclick -> onClick, onchange -> onChange, etc.
-  if (attrName.startsWith('on') && attrName.length > 2) {
-    return 'on' + attrName.charAt(2).toUpperCase() + attrName.slice(3)
-  }
-  
-  // Convert other attributes: data-* and aria-* stay as-is
-  if (attrName.startsWith('data-') || attrName.startsWith('aria-')) {
-    return attrName
-  }
-  
-  // Convert kebab-case to camelCase: tab-index -> tabIndex
-  if (attrName.includes('-')) {
-    return attrName.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())
-  }
-  
-  return attrName
-}
-
-// Extract all expressions from template for pre-evaluation
-function extractExpressions(template: string): string[] {
-  const expressions: Set<string> = new Set()
-  
-  // Extract expressions from text content {expression}
-  let textIndex = 0
-  while (textIndex < template.length) {
-    const exprStart = template.indexOf('{', textIndex)
-    if (exprStart === -1) break
-    const exprEnd = template.indexOf('}', exprStart)
-    if (exprEnd === -1) break
-    const expr = template.substring(exprStart + 1, exprEnd).trim()
-    if (expr) {
-      expressions.add(expr)
-    }
-    textIndex = exprEnd + 1
-  }
-  
-  // Extract expressions from attributes (e.g., attr="{expression}")
-  const attrExprRegex = /="\{([^}]+)\}"/g
-  let match
-  while ((match = attrExprRegex.exec(template)) !== null) {
-    const expr = match[1].trim()
-    if (expr) {
-      expressions.add(expr)
-    }
-  }
-  
-  return Array.from(expressions)
-}
-
-// Evaluate expression using the appropriate JS engine
-async function evaluateExpressionAsync(
-  expr: string,
-  context: Record<string, any>,
-  engineType: EngineType,
-  actions?: Record<string, Function>
-): Promise<any> {
-  try {
-    expr = expr.trim()
-    
-    // Check if expression is a simple action reference (just an identifier)
-    // Actions can't be serialized to sandbox, so handle them on main thread
-    if (actions && /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(expr) && actions[expr]) {
-      // This is a direct action reference, return the action function
-      return actions[expr]
-    }
-    
-    // Use the appropriate engine based on engineType
-    const engine = getJSEngine(engineType)
-    return await engine.evaluateExpression(expr, context)
-  } catch (error) {
-    console.error(`Error evaluating expression "${expr}":`, error)
-    return undefined
-  }
-}
-
-// Convert DOM nodes to React elements using DOMParser
-function parseTemplate(
-  template: string,
-  _data: Record<string, any>, // Unused - expressions are pre-evaluated
-  _actions: Record<string, Function>, // Unused - expressions are pre-evaluated
-  imports: Record<string, any>,
-  _engineType: EngineType, // Unused - expressions are pre-evaluated
-  expressionResults?: Map<string, any>
-): ReactNode {
-
-  // Evaluate expressions in {expression} syntax
-  // All expressions are now pre-evaluated asynchronously, so we just look up results
-  function evaluateExpression(expr: string): any {
-    if (expressionResults) {
-      // Use pre-evaluated results (works for both engine types)
-      return expressionResults.get(expr) ?? undefined
-    }
-    // Fallback if results not ready yet
-    return undefined
+async function loadImportsFromConfig(importsConfig: Array<Record<string, string>> | undefined): Promise<Record<string, any>> {
+  const importMap: Record<string, any> = {}
+  if (!importsConfig) {
+    return importMap
   }
 
-  // Convert DOM node to React element
-  function domToReact(node: Node, key: number = 0): ReactNode {
-    if (node.nodeType === Node.TEXT_NODE) {
-      const text = node.textContent || ''
-      // Filter out single character artifacts like "<" or ">" that might come from parsing
-      const trimmed = text.trim()
-      if (trimmed === '<' || trimmed === '>' || trimmed === '</' || trimmed === '/>') {
-        return null
+  const importPromises: Promise<void>[] = []
+
+  importsConfig.forEach((imp) => {
+    Object.keys(imp).forEach((key) => {
+      const path = imp[key]
+      if (path.startsWith('/')) {
+        importMap[key] = path
+      } else {
+        const componentName = path.replace(/\.tsx$/, '')
+        const pascalComponentName = toPascalCase(componentName)
+        const pascalKey = toPascalCase(key)
+
+        importPromises.push(
+          loadComponent(pascalComponentName)
+            .then((component) => {
+              if (component) {
+                importMap[key] = component
+                importMap[toKebabCase(key)] = component
+              } else {
+                return loadComponent(pascalKey).then((fallbackComponent) => {
+                  if (fallbackComponent) {
+                    importMap[key] = fallbackComponent
+                    importMap[toKebabCase(key)] = fallbackComponent
+                  } else {
+                    console.error(`Component "${pascalComponentName}" or "${pascalKey}" not found in registry`)
+                  }
+                })
+              }
+            })
+            .catch((error) => {
+              console.error(`Failed to load component "${pascalComponentName}" for key "${key}":`, error)
+            })
+        )
       }
-      // Handle expressions in text
-      if (text.includes('{')) {
-        const parts: ReactNode[] = []
-        let textIndex = 0
-        while (textIndex < text.length) {
-          const exprStart = text.indexOf('{', textIndex)
-          if (exprStart === -1) {
-            parts.push(text.substring(textIndex))
-            break
-          }
-          if (exprStart > textIndex) {
-            parts.push(text.substring(textIndex, exprStart))
-          }
-          const exprEnd = text.indexOf('}', exprStart)
-          if (exprEnd === -1) break
-          const expr = text.substring(exprStart + 1, exprEnd)
-          const evaluated = evaluateExpression(expr)
-          if (typeof evaluated !== 'function') {
-            parts.push(evaluated == null ? '' : String(evaluated))
-          } else {
-            parts.push('')
-          }
-          textIndex = exprEnd + 1
+    })
+  })
+
+  await Promise.all(importPromises)
+  return importMap
+}
+
+function checkImportsLoaded(
+  importsConfig: Array<Record<string, string>> | undefined,
+  imports: Record<string, any>
+): boolean {
+  if (!importsConfig) {
+    return true
+  }
+
+  const expectedComponentKeys: string[] = []
+  importsConfig.forEach(imp => {
+    Object.keys(imp).forEach(key => {
+      const path = imp[key]
+      if (!path.startsWith('/')) {
+        expectedComponentKeys.push(key)
+        expectedComponentKeys.push(toKebabCase(key))
+      }
+    })
+  })
+
+  if (expectedComponentKeys.length === 0) {
+    return true
+  }
+
+  return expectedComponentKeys.every(key =>
+    imports[key] && typeof imports[key] === 'function'
+  )
+}
+
+type CreateComponentDeps = {
+  React: typeof React
+  initializeDataFromConfig: typeof initializeDataFromConfig
+  loadImportsFromConfig: typeof loadImportsFromConfig
+  checkImportsLoaded: typeof checkImportsLoaded
+  renderTemplate: (data: Record<string, any>, actions: Record<string, Function>, imports: Record<string, any>, expressionResults: Map<string, any>) => ReactNode
+  parseActions: (actions: Record<string, string> | undefined, getData: () => Record<string, any>, setData: (data: Record<string, any>) => void) => Record<string, Function>
+  evaluateExpressions?: (view: string, data: Record<string, any>, actions: Record<string, Function>, imports: Record<string, any>) => Promise<Map<string, any>>
+}
+
+function createComponent(
+  config: ComponentDefinition,
+  deps: CreateComponentDeps
+): ComponentType {
+  const { React, initializeDataFromConfig, loadImportsFromConfig, checkImportsLoaded, renderTemplate, parseActions, evaluateExpressions } = deps
+
+  return function CompiledTemplate() {
+    const [data, setData] = React.useState<Record<string, any>>({})
+    const [actions, setActions] = React.useState<Record<string, Function>>({})
+    const [imports, setImports] = React.useState<Record<string, any>>({})
+    const [expressionResults, setExpressionResults] = React.useState<Map<string, any>>(new Map())
+    const dataRef = React.useRef(data)
+
+    React.useEffect(() => {
+      dataRef.current = data
+    }, [data])
+
+    React.useEffect(() => {
+      const initialData = initializeDataFromConfig(config.data)
+      setData(initialData)
+    }, [config.data])
+
+    React.useEffect(() => {
+      if (Object.keys(data).length > 0) {
+        const parsedActions = parseActions(config.actions, () => dataRef.current, setData)
+        setActions(parsedActions)
+      }
+    }, [data, config.actions])
+
+    React.useEffect(() => {
+      if (config.imports) {
+        loadImportsFromConfig(config.imports).then(setImports)
+      }
+    }, [config.imports])
+
+    React.useEffect(() => {
+      if (evaluateExpressions) {
+        const hasData = Object.keys(data).length > 0
+        const hasImports = !config.imports || Object.keys(imports).length > 0
+        if (hasData && hasImports) {
+          evaluateExpressions(config.view, data, actions, imports).then(setExpressionResults)
         }
-        return React.createElement(React.Fragment, { key }, ...parts)
       }
-      return text || null
+    }, [config.view, data, actions, imports])
+
+    if (config.actions && Object.keys(actions).length === 0 && Object.keys(data).length > 0) {
+      return React.createElement('div', null, 'Loading actions...')
+    }
+
+    if (!checkImportsLoaded(config.imports, imports)) {
+      return React.createElement('div', null, 'Loading components...')
+    }
+
+    const rendered = renderTemplate(data, actions, imports, expressionResults)
+    return React.createElement(React.Fragment, null, rendered)
+  }
+}
+
+
+// ============================================================================
+// Template Compiler
+// ============================================================================
+
+function compileTemplateToJS(config: ComponentDefinition): string {
+  const dataKeys = config.data ? Object.keys(config.data) : []
+  const actionKeys = config.actions ? Object.keys(config.actions) : []
+  const importKeys: string[] = []
+  if (config.imports) {
+    config.imports.forEach(imp => {
+      Object.keys(imp).forEach(key => {
+        importKeys.push(key)
+        const kebab = key.replace(/([A-Z])/g, '-$1').toLowerCase().replace(/^-/, '')
+        if (kebab !== key) {
+          importKeys.push(kebab)
+        }
+      })
+    })
+  }
+
+  // Compile template to JavaScript code
+  function exprToJS(expr: string): string {
+    expr = expr.trim()
+
+    if (dataKeys.includes(expr)) {
+      return `data.${expr}`
+    }
+    if (actionKeys.includes(expr)) {
+      return `actions.${expr}`
+    }
+    if (importKeys.includes(expr)) {
+      return `imports.${expr}`
+    }
+
+    let jsExpr = expr
+    dataKeys.forEach(key => {
+      jsExpr = jsExpr.replace(new RegExp(`\\b${key}\\b`, 'g'), `data.${key}`)
+    })
+    actionKeys.forEach(key => {
+      jsExpr = jsExpr.replace(new RegExp(`\\b${key}\\b`, 'g'), `actions.${key}`)
+    })
+    importKeys.forEach(key => {
+      jsExpr = jsExpr.replace(new RegExp(`\\b${key}\\b`, 'g'), `imports.${key}`)
+    })
+
+    return jsExpr
+  }
+
+  function textToJS(text: string): string {
+    if (!text.includes('{')) {
+      return text ? JSON.stringify(text) : 'null'
+    }
+
+    const parts: string[] = []
+    let textIndex = 0
+    while (textIndex < text.length) {
+      const exprStart = text.indexOf('{', textIndex)
+      if (exprStart === -1) {
+        const remaining = text.substring(textIndex)
+        if (remaining) parts.push(JSON.stringify(remaining))
+        break
+      }
+      if (exprStart > textIndex) {
+        parts.push(JSON.stringify(text.substring(textIndex, exprStart)))
+      }
+      const exprEnd = text.indexOf('}', exprStart)
+      if (exprEnd === -1) break
+      const expr = exprToJS(text.substring(exprStart + 1, exprEnd))
+      parts.push(`String(${expr} ?? '')`)
+      textIndex = exprEnd + 1
+    }
+
+    if (parts.length === 0) return 'null'
+    if (parts.length === 1) return parts[0]
+    return `[${parts.join(', ')}].join('')`
+  }
+
+  function attributesToJS(element: Element): string[] {
+    const props: string[] = []
+    Array.from(element.attributes).forEach((attr) => {
+      const reactName = toReactPropName(attr.name)
+      let value = attr.value
+      if (value.startsWith('{') && value.endsWith('}')) {
+        props.push(`${reactName}: ${exprToJS(value.slice(1, -1))}`)
+      } else {
+        props.push(`${reactName}: ${JSON.stringify(value)}`)
+      }
+    })
+    return props
+  }
+
+  function nodeToJS(node: Node): string {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return textToJS(node.textContent || '')
     }
 
     if (node.nodeType === Node.ELEMENT_NODE) {
       const element = node as Element
       const tagName = element.tagName.toLowerCase()
-      
-      // Note: Fragments are now handled implicitly at the root level
-      // No need to handle <fragment> tags here
+      const props = attributesToJS(element)
+      const children: string[] = []
 
-      // Parse attributes
-      const attrs: Record<string, any> = {}
-      Array.from(element.attributes).forEach((attr) => {
-        const reactName = toReactPropName(attr.name)
-        let value: any = attr.value
-        
-        // Check if value contains {expression}
-        if (value.startsWith('{') && value.endsWith('}')) {
-          const expr = value.slice(1, -1)
-          value = evaluateExpression(expr)
-        }
-        
-        attrs[reactName] = value
-      })
-
-      // Check if it's a component (has hyphen or is a known import)
-      const isComponent = tagName.includes('-') || imports[tagName] !== undefined
-      let Component: any = tagName
-      if (isComponent) {
-        // Try to find component: first by kebab-case, then convert to PascalCase
-        Component = imports[tagName] || imports[toPascalCase(tagName)]
-        // Check if Component is actually a function/component (not a string path)
-        if (!Component || typeof Component === 'string' || typeof Component !== 'function') {
-          // For kebab-case tags that aren't found, we can't render them as HTML tags
-          if (tagName.includes('-')) {
-            console.warn(`Component "${tagName}" not found or not loaded yet. Available imports:`, Object.keys(imports), 'Component value:', Component)
-            // Return null if component isn't ready yet
-            return null
-          }
-          Component = tagName
-        }
-      }
-
-      // Parse children
-      const children: ReactNode[] = []
-      Array.from(element.childNodes).forEach((child, idx) => {
-        const childNode = domToReact(child, idx)
-        if (childNode !== null && typeof childNode !== 'function') {
-          children.push(childNode)
+      Array.from(element.childNodes).forEach((child) => {
+        const childJS = nodeToJS(child)
+        if (childJS !== 'null') {
+          children.push(childJS)
         }
       })
 
-      return React.createElement(Component, { ...attrs, key }, ...children)
+      const isComponent = tagName.includes('-') || importKeys.includes(tagName)
+      const component = isComponent
+        ? `imports.${tagName} || imports.${toPascalCase(tagName)} || ${JSON.stringify(tagName)}`
+        : JSON.stringify(tagName)
+
+      const propsStr = props.length > 0 ? `{ ${props.join(', ')} }` : '{}'
+      const childrenStr = children.length > 0 ? `, ${children.join(', ')}` : ''
+      return `React.createElement(${component}, ${propsStr}${childrenStr})`
     }
 
-    return null
+    return 'null'
   }
 
-  // Use DOMParser to parse the template
-  // Support multiple root nodes - automatically wrap in Fragment if needed
-  const trimmedTemplate = template.trim()
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(config.view.trim(), 'text/html')
+  const body = doc.body
 
-  try {
-    const parser = new DOMParser()
-    const doc = parser.parseFromString(trimmedTemplate, 'text/html')
-    
-    // Get the body content (DOMParser wraps in html/body)
-    const body = doc.body
-    if (!body || body.children.length === 0) {
-      return null
-    }
-
-    // Process all root-level children (supports multiple root nodes)
-    const children: ReactNode[] = []
-    Array.from(body.children).forEach((node, idx) => {
-      const reactNode = domToReact(node, idx)
-      if (reactNode !== null && reactNode !== undefined) {
-        children.push(reactNode)
+  let compiledView: string
+  if (!body || body.children.length === 0) {
+    compiledView = 'null'
+  } else {
+    const rootNodes: string[] = []
+    Array.from(body.children).forEach((node) => {
+      const js = nodeToJS(node)
+      if (js !== 'null') {
+        rootNodes.push(js)
       }
     })
 
-    // If there's only one root node, return it directly
-    // If there are multiple root nodes, wrap them in a Fragment
-    return children.length === 1 ? children[0] : React.createElement(React.Fragment, null, ...children)
-  } catch (error) {
-    console.error('Error parsing template with DOMParser:', error)
-    return null
+    if (rootNodes.length === 0) {
+      compiledView = 'null'
+    } else if (rootNodes.length === 1) {
+      compiledView = rootNodes[0]
+    } else {
+      compiledView = `React.createElement(React.Fragment, null, ${rootNodes.join(', ')})`
+    }
   }
-}
 
-// Compile a template config into a React component
-export function compileTemplate(config: TemplateConfig): ComponentType {
-  return function CompiledTemplate() {
-    const [data, setData] = useState<Record<string, any>>({})
-    const [actions, setActions] = useState<Record<string, Function>>({})
-    const [imports, setImports] = useState<Record<string, any>>({})
-    const [expressionResults, setExpressionResults] = useState<Map<string, any>>(new Map())
-    const dataRef = useRef(data)
-    const engineType = config.engineType || ENGINE_TYPES.INLINE // default to inline
-    
-    // Keep ref in sync with data
-    useEffect(() => {
-      dataRef.current = data
-    }, [data])
-
-    // Initialize data from config
-    useEffect(() => {
-      const initialData: Record<string, any> = {}
-
-      if (config.data) {
-        Object.keys(config.data).forEach((key) => {
-          initialData[key] = config.data[key].initial
-        })
-      }
-
-      setData(initialData)
-    }, [config.data])
-
-    // Parse actions - they receive (data, setData)
-    useEffect(() => {
-      if (config.actions && Object.keys(data).length > 0) {
-        const parsedActions: Record<string, Function> = {}
-        Object.keys(config.actions).forEach((actionName) => {
-          const actionStr = config.actions![actionName]
+  const actionParsingCode = actionKeys.length > 0 ? actionKeys.map(key => {
+    const actionCode = config.actions![key]
+    return `parsedActions[${JSON.stringify(key)}] = () => {
+          const currentData = getData();
           try {
-            // Use the appropriate engine based on engineType
-            // For sandbox mode, callbacks are provided as a map that the sandbox can invoke via postMessage
-            // This approach allows any function to communicate with the host via postMessage
-            // Note: Updates are applied asynchronously. Side effects that depend on immediate
-            // state updates may not work as expected.
-            parsedActions[actionName] = async () => {
-              const currentData = dataRef.current
-              try {
-                const engine = getJSEngine(engineType)
-                // setData is passed explicitly as a dispatch action
-                // Execute action using the engine
-                await engine.executeAction(actionStr, currentData, setData)
-              } catch (error) {
-                console.error(`Error executing action ${actionName}:`, error)
-              }
-            }
+            const actionFunc = ${actionCode};
+            actionFunc(currentData, setData);
           } catch (error) {
-            console.error(`Error parsing action ${actionName}:`, error)
+            console.error(\`Error executing action ${JSON.stringify(key)}:\`, error);
           }
-        })
-        setActions(parsedActions)
-      }
-    }, [data, config.actions, engineType])
+        };`
+  }).join('\n        ') : ''
 
-    // Handle imports - use dynamic imports for code splitting
-    useEffect(() => {
-      if (config.imports) {
-        const importMap: Record<string, any> = {}
-        const importPromises: Promise<void>[] = []
-        
-        config.imports.forEach((imp) => {
-          Object.keys(imp).forEach((key) => {
-            const path = imp[key]
-            if (path.startsWith('/')) {
-              // Public asset (like /vite.svg) - just store the path
-              importMap[key] = path
-            } else {
-              // Component name with .tsx extension - dynamically import from registry
-              // Remove .tsx extension if present and convert to PascalCase
-              const componentName = path.replace(/\.tsx$/, '')
-              const pascalComponentName = toPascalCase(componentName)
-              const pascalKey = toPascalCase(key)
-              
-              importPromises.push(
-                loadComponent(pascalComponentName)
-                  .then((component) => {
-                    if (component) {
-                      // Store by the key (PascalCase) and also by kebab-case for template matching
-                      importMap[key] = component
-                      importMap[toKebabCase(key)] = component
-                    } else {
-                      // Try the key as fallback (also in PascalCase)
-                      return loadComponent(pascalKey).then((fallbackComponent) => {
-                        if (fallbackComponent) {
-                          importMap[key] = fallbackComponent
-                          importMap[toKebabCase(key)] = fallbackComponent
-                        } else {
-                          console.error(`Component "${pascalComponentName}" or "${pascalKey}" not found in registry. Make sure it's registered in src/components/registry.ts`)
-                        }
-                      })
-                    }
-                  })
-                  .catch((error) => {
-                    console.error(`Failed to load component "${pascalComponentName}" for key "${key}":`, error)
-                  })
-              )
-            }
-          })
-        })
-        
-        // Wait for all component imports to complete
-        Promise.all(importPromises).then(() => {
-          setImports(importMap)
-        })
-      }
-    }, [config.imports])
-
-    // Evaluate expressions asynchronously for both modes
-    useEffect(() => {
-      // Wait for data to be initialized and imports to be loaded (if any)
-      const hasData = Object.keys(data).length > 0
-      const hasImports = !config.imports || Object.keys(imports).length > 0
-      
-      if (hasData && hasImports) {
-        const evaluateExpressions = async () => {
-          const expressions = extractExpressions(config.view)
-          if (expressions.length === 0) {
-            setExpressionResults(new Map())
-            return
-          }
-
-          // Build context - only include serializable values
-          const context: Record<string, any> = {}
-          
-          // Add data values (primitives, should be serializable)
-          Object.keys(data).forEach(key => {
-            context[key] = data[key]
-          })
-          
-          // Add imports (strings, components - components are functions so will be filtered)
-          Object.keys(imports).forEach(key => {
-            context[key] = imports[key]
-          })
-          
-          // Debug: log context keys
-          if (engineType === ENGINE_TYPES.SANDBOX) {
-            console.log('Sandbox evaluation context keys:', Object.keys(context))
-            console.log('Context values:', Object.keys(context).reduce((acc, key) => {
-              acc[key] = typeof context[key]
-              return acc
-            }, {} as Record<string, string>))
-          }
-
-          const results = new Map<string, any>()
-          await Promise.all(
-            expressions.map(async (expr) => {
-              try {
-                // Pass actions so action references can be handled on main thread
-                const result = await evaluateExpressionAsync(expr, context, engineType, actions)
-                results.set(expr, result)
-              } catch (error) {
-                console.error(`Error evaluating expression "${expr}":`, error)
-                results.set(expr, undefined)
-              }
-            })
-          )
-
-          setExpressionResults(results)
-        }
-
-        evaluateExpressions()
-      }
-    }, [config.view, data, actions, imports, engineType])
-
-    // Don't render if actions are defined but not yet parsed
-    if (config.actions && Object.keys(actions).length === 0 && Object.keys(data).length > 0) {
-      return React.createElement('div', null, 'Loading actions...')
-    }
-
-    // Don't render if component imports are still loading
-    if (config.imports) {
-      const expectedComponentKeys: string[] = []
-      config.imports.forEach(imp => {
-        Object.keys(imp).forEach(key => {
-          const path = imp[key]
-          // Component imports don't start with / (those are assets)
-          if (!path.startsWith('/')) {
-            expectedComponentKeys.push(key) // PascalCase key from YAML
-            expectedComponentKeys.push(toKebabCase(key)) // Also check kebab-case version
-          }
-        })
-      })
-      // Check if all expected component imports are loaded and are functions
-      if (expectedComponentKeys.length > 0) {
-        const hasAllImports = expectedComponentKeys.every(key => 
-          imports[key] && typeof imports[key] === 'function'
-        )
-        if (!hasAllImports) {
-          return React.createElement('div', null, 'Loading components...')
-        }
+  return `export default function createCompiledComponent(config, deps) {
+  const { createComponent, React, ...baseDeps } = deps;
+  return createComponent(
+    config,
+    {
+      ...deps,
+      renderTemplate: (data, actions, imports, expressionResults) => {
+        return ${compiledView};
+      },
+      parseActions: (actions, getData, setData) => {
+        const parsedActions = {};
+        ${actionParsingCode}
+        return parsedActions;
       }
     }
+  );
+}`
+}
 
-    // Don't render if expressions are still being evaluated
-    if (Object.keys(data).length > 0) {
-      const expressions = extractExpressions(config.view)
-      if (expressions.length > 0) {
-        const allEvaluated = expressions.every(expr => expressionResults.has(expr))
-        if (!allEvaluated) {
-          return React.createElement('div', null, 'Evaluating expressions...')
-        }
-      }
+async function compileTemplateToJsBlobComponent(config: ComponentDefinition): Promise<ComponentType> {
+  const componentCode = compileTemplateToJS(config)
+  const blob = new Blob([componentCode], { type: 'application/javascript' })
+  const blobUrl = URL.createObjectURL(blob)
+
+  try {
+    const module = await import(/* @vite-ignore */ blobUrl)
+    const createCompiledComponent = module.default
+    if (!createCompiledComponent) {
+      throw new Error('createComponent default export not found in blob')
     }
-
-    const rendered = parseTemplate(config.view, data, actions, imports, engineType, expressionResults)
-
-    return React.createElement(React.Fragment, null, rendered)
+    return createCompiledComponent(
+      { data: config.data, imports: config.imports },
+      {
+        React,
+        createComponent,
+        initializeDataFromConfig,
+        loadImportsFromConfig,
+        checkImportsLoaded
+      }
+    )
+  } finally {
+    URL.revokeObjectURL(blobUrl)
   }
 }
 
+function compileTemplateToInlineComponent(config: ComponentDefinition, effectiveStrategy: CompilationStrategy): ComponentType {
+  return createComponent(config, {
+    React,
+    initializeDataFromConfig,
+    loadImportsFromConfig,
+    checkImportsLoaded,
+    renderTemplate: (_data, _actions, imports, expressionResults) => {
+      function evaluateExpression(expr: string): any {
+        return expressionResults?.get(expr) ?? undefined
+      }
+
+      function domToReact(node: Node, key: number = 0): ReactNode {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const text = node.textContent || ''
+          return parseTextWithExpressions(text, evaluateExpression, key)
+        }
+
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          const element = node as Element
+          const tagName = element.tagName.toLowerCase()
+          const attrs = parseAttributes(element, evaluateExpression)
+          const Component = resolveComponent(tagName, imports)
+          
+          if (Component === null) {
+            return null
+          }
+
+          const children: ReactNode[] = []
+          Array.from(element.childNodes).forEach((child, idx) => {
+            const childNode = domToReact(child, idx)
+            if (childNode !== null && typeof childNode !== 'function') {
+              children.push(childNode)
+            }
+          })
+
+          return React.createElement(Component, { ...attrs, key }, ...children)
+        }
+
+        return null
+      }
+
+      const trimmedTemplate = config.view.trim()
+      try {
+        const parser = new DOMParser()
+        const doc = parser.parseFromString(trimmedTemplate, 'text/html')
+        const body = doc.body
+        if (!body || body.children.length === 0) {
+          return null
+        }
+
+        const children: ReactNode[] = []
+        Array.from(body.children).forEach((node, idx) => {
+          const reactNode = domToReact(node, idx)
+          if (reactNode !== null && reactNode !== undefined) {
+            children.push(reactNode)
+          }
+        })
+
+        return children.length === 1 ? children[0] : React.createElement(React.Fragment, null, ...children)
+      } catch (error) {
+        console.error('Error parsing template with DOMParser:', error)
+        return null
+      }
+    },
+    parseActions: (actions, getData, setData) => {
+      const parsedActions: Record<string, Function> = {}
+      if (actions) {
+        Object.keys(actions).forEach((actionName) => {
+          const actionStr = actions[actionName]
+          parsedActions[actionName] = async () => {
+            const currentData = getData()
+            try {
+              const engine = getJSEngine(effectiveStrategy)
+              await engine.executeAction(actionStr, currentData, setData)
+            } catch (error) {
+              console.error(`Error executing action ${actionName}:`, error)
+            }
+          }
+        })
+      }
+      return parsedActions
+    },
+    evaluateExpressions: async (view, data, actions, imports) => {
+      const expressions = extractExpressions(view)
+      if (expressions.length === 0) {
+        return new Map()
+      }
+
+      const context: Record<string, any> = { ...data }
+      Object.keys(imports).forEach(key => {
+        context[key] = imports[key]
+      })
+
+      const results = new Map<string, any>()
+      await Promise.all(
+        expressions.map(async (expr) => {
+          try {
+            const result = await evaluateExpressionAsync(expr, context, effectiveStrategy, actions)
+            results.set(expr, result)
+          } catch (error) {
+            console.error(`Error evaluating expression "${expr}":`, error)
+            results.set(expr, undefined)
+          }
+        })
+      )
+
+      return results
+    }
+  })
+}
+
+export async function compileTemplate(config: ComponentDefinition, compilationStrategy?: CompilationStrategy): Promise<ComponentType> {
+  const effectiveStrategy = compilationStrategy || config.compilationStrategy || COMPILATION_STRATEGIES.BLOB
+
+  if (effectiveStrategy === COMPILATION_STRATEGIES.BLOB) {
+    return await compileTemplateToJsBlobComponent(config)
+  }
+
+  return compileTemplateToInlineComponent(config, effectiveStrategy)
+}

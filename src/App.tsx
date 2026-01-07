@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import DeclComponent from './components/DeclComponent'
-import { ENGINE_TYPES, type EngineType } from './services/compiler'
+import { COMPILATION_STRATEGIES, type CompilationStrategy } from './services/compiler'
 import './App.css'
 
 function App() {
-  const [engineType, setEngineType] = useState<EngineType>(ENGINE_TYPES.INLINE)
+  const [compilationStrategy, setCompilationStrategy] = useState<CompilationStrategy>(COMPILATION_STRATEGIES.INLINE)
 
   return (
     <div>
@@ -17,10 +17,10 @@ function App() {
         gap: '10px'
       }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span>Engine Type:</span>
+          <span>Compilation Strategy:</span>
           <select
-            value={engineType}
-            onChange={(e) => setEngineType(e.target.value as EngineType)}
+            value={compilationStrategy}
+            onChange={(e) => setCompilationStrategy(e.target.value as CompilationStrategy)}
             style={{
               padding: '4px 8px',
               fontSize: '14px',
@@ -28,9 +28,9 @@ function App() {
               borderRadius: '4px'
             }}
           >
-            <option value={ENGINE_TYPES.INLINE}>Inline (Direct Evaluation)</option>
-            <option value={ENGINE_TYPES.SANDBOX}>Sandbox (Iframe Isolation)</option>
-            <option value={ENGINE_TYPES.BLOB}>Blob (Static Compilation)</option>
+            <option value={COMPILATION_STRATEGIES.INLINE}>Inline (Direct Evaluation)</option>
+            <option value={COMPILATION_STRATEGIES.SANDBOX}>Sandbox (Iframe Isolation)</option>
+            <option value={COMPILATION_STRATEGIES.BLOB}>Blob (Static Compilation)</option>
           </select>
         </label>
         <span style={{ 
@@ -38,12 +38,12 @@ function App() {
           color: '#666',
           fontStyle: 'italic'
         }}>
-          {engineType === ENGINE_TYPES.INLINE ? 'Direct evaluation' : 
-           engineType === ENGINE_TYPES.SANDBOX ? 'Sandboxed evaluation' : 
+          {compilationStrategy === COMPILATION_STRATEGIES.INLINE ? 'Direct evaluation' : 
+           compilationStrategy === COMPILATION_STRATEGIES.SANDBOX ? 'Sandboxed evaluation' : 
            'Static blob compilation'}
         </span>
       </div>
-      <DeclComponent src="example" engineType={engineType} />
+      <DeclComponent src="example" compilationStrategy={compilationStrategy} />
     </div>
   )
 }
