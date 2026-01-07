@@ -34,4 +34,9 @@ export default defineConfig({
     }),
     cspHeadersPlugin(),
   ],
+  resolve: {
+    alias: {
+      'monaco-editor': 'monaco-editor/esm/vs/editor/editor.api.js',
+    },
+  },
 })

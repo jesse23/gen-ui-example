@@ -537,32 +537,54 @@ async function loadImportsFromConfig(importsConfig: Array<Record<string, string>
         const pascalComponentName = toPascalCase(componentName)
         const pascalKey = toPascalCase(key)
 
-        importPromises.push(
-          loadComponent(pascalComponentName)
-            .then((component) => {
-              if (component) {
-                importMap[key] = component
-                importMap[toKebabCase(key)] = component
-              } else {
-                return loadComponent(pascalKey).then((fallbackComponent) => {
-                  if (fallbackComponent) {
-                    importMap[key] = fallbackComponent
-                    importMap[toKebabCase(key)] = fallbackComponent
-                  } else {
-                    console.error(`Component "${pascalComponentName}" or "${pascalKey}" not found in registry`)
-                  }
-                })
+        const loadPromise = (async () => {
+          try {
+            // Try the key from YAML first (most likely to match registry)
+            let component = await loadComponent(pascalKey)
+            
+            if (!component && pascalComponentName !== pascalKey) {
+              // Fallback to component name from path if different
+              component = await loadComponent(pascalComponentName)
+            }
+            
+            if (component) {
+              importMap[key] = component
+              importMap[toKebabCase(key)] = component
+            } else {
+              console.error(`Component "${pascalKey}"${pascalComponentName !== pascalKey ? ` or "${pascalComponentName}"` : ''} not found in registry`)
+            }
+          } catch (error) {
+            console.error(`Failed to load component "${pascalKey}" for key "${key}":`, error)
+            // Try fallback even on error
+            if (pascalComponentName !== pascalKey) {
+              try {
+                const fallbackComponent = await loadComponent(pascalComponentName)
+                if (fallbackComponent) {
+                  importMap[key] = fallbackComponent
+                  importMap[toKebabCase(key)] = fallbackComponent
+                }
+              } catch (fallbackError) {
+                console.error(`Failed to load fallback component "${pascalComponentName}":`, fallbackError)
               }
-            })
-            .catch((error) => {
-              console.error(`Failed to load component "${pascalComponentName}" for key "${key}":`, error)
-            })
-        )
+            }
+          }
+        })()
+        
+        importPromises.push(loadPromise)
       }
     })
   })
 
-  await Promise.all(importPromises)
+  // Wait for all imports to complete
+  console.log(`Waiting for ${importPromises.length} import promises to resolve...`)
+  try {
+    await Promise.all(importPromises)
+    console.log('All imports resolved successfully')
+  } catch (error) {
+    console.error('Error loading imports:', error)
+  }
+  
+  console.log('Final importMap:', Object.keys(importMap))
   return importMap
 }
 
@@ -578,6 +600,7 @@ function checkImportsLoaded(
   importsConfig.forEach(imp => {
     Object.keys(imp).forEach(key => {
       const path = imp[key]
+      // Only check components (not paths starting with '/')
       if (!path.startsWith('/')) {
         expectedComponentKeys.push(key)
         expectedComponentKeys.push(toKebabCase(key))
@@ -589,9 +612,36 @@ function checkImportsLoaded(
     return true
   }
 
-  return expectedComponentKeys.every(key =>
-    imports[key] && typeof imports[key] === 'function'
-  )
+  // Check that all expected component keys are loaded and are valid React components
+  // React components can be functions or objects (like forwardRef components)
+  const allLoaded = expectedComponentKeys.every(key => {
+    const importValue = imports[key]
+    // A valid component can be:
+    // 1. A function (function components)
+    // 2. An object (forwardRef, memo, etc. - React components are objects)
+    // Strings are paths (like '/vite.svg'), not components, so exclude them
+    const hasImport = importValue && 
+      (typeof importValue === 'function' || 
+       (typeof importValue === 'object' && importValue !== null))
+    
+    if (!hasImport) {
+      console.log(`Missing or invalid import for key "${key}":`, {
+        exists: key in imports,
+        type: typeof importValue,
+        value: importValue
+      })
+    }
+    return hasImport
+  })
+  
+  if (!allLoaded) {
+    const missing = expectedComponentKeys.filter(key => !imports[key] || typeof imports[key] !== 'function')
+    console.log('Missing imports:', missing)
+    console.log('Expected component keys (excluding paths):', expectedComponentKeys)
+    console.log('Available imports:', Object.keys(imports).map(k => ({ key: k, type: typeof imports[k], isFunction: typeof imports[k] === 'function' })))
+  }
+  
+  return allLoaded
 }
 
 type CreateComponentDeps = {
@@ -635,7 +685,20 @@ function createComponent(
 
     React.useEffect(() => {
       if (config.imports) {
-        loadImportsFromConfig(config.imports).then(setImports)
+        const timeoutId = setTimeout(() => {
+          console.error('Component loading timeout - imports may have failed to load')
+        }, 10000) // 10 second timeout
+        
+        loadImportsFromConfig(config.imports)
+          .then((imports) => {
+            clearTimeout(timeoutId)
+            setImports(imports)
+          })
+          .catch((error) => {
+            clearTimeout(timeoutId)
+            console.error('Failed to load imports:', error)
+            setImports({}) // Set empty imports to prevent infinite loading
+          })
       }
     }, [config.imports])
 
@@ -653,7 +716,13 @@ function createComponent(
       return React.createElement('div', null, 'Loading actions...')
     }
 
-    if (!checkImportsLoaded(config.imports, imports)) {
+    const importsLoaded = checkImportsLoaded(config.imports, imports)
+    if (!importsLoaded) {
+      console.log('Imports not loaded yet, waiting...', {
+        expected: config.imports?.flatMap(imp => Object.keys(imp)),
+        loaded: Object.keys(imports),
+        imports
+      })
       return React.createElement('div', null, 'Loading components...')
     }
 
@@ -694,7 +763,8 @@ function compileTemplateToJS(config: ComponentDefinition): string {
       return `actions.${expr}`
     }
     if (importKeys.includes(expr)) {
-      return `imports.${expr}`
+      // Use bracket notation for kebab-case keys, dot notation for valid identifiers
+      return expr.includes('-') ? `imports[${JSON.stringify(expr)}]` : `imports.${expr}`
     }
 
     let jsExpr = expr
@@ -705,7 +775,9 @@ function compileTemplateToJS(config: ComponentDefinition): string {
       jsExpr = jsExpr.replace(new RegExp(`\\b${key}\\b`, 'g'), `actions.${key}`)
     })
     importKeys.forEach(key => {
-      jsExpr = jsExpr.replace(new RegExp(`\\b${key}\\b`, 'g'), `imports.${key}`)
+      // Use bracket notation for kebab-case keys, dot notation for valid identifiers
+      const replacement = key.includes('-') ? `imports[${JSON.stringify(key)}]` : `imports.${key}`
+      jsExpr = jsExpr.replace(new RegExp(`\\b${key}\\b`, 'g'), replacement)
     })
 
     return jsExpr
@@ -774,7 +846,7 @@ function compileTemplateToJS(config: ComponentDefinition): string {
 
       const isComponent = tagName.includes('-') || importKeys.includes(tagName)
       const component = isComponent
-        ? `imports.${tagName} || imports.${toPascalCase(tagName)} || ${JSON.stringify(tagName)}`
+        ? `(imports[${JSON.stringify(tagName)}] || imports.${toPascalCase(tagName)} || ${JSON.stringify(tagName)})`
         : JSON.stringify(tagName)
 
       const propsStr = props.length > 0 ? `{ ${props.join(', ')} }` : '{}'

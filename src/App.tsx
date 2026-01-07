@@ -1,49 +1,51 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import Editor from '@monaco-editor/react'
 import DeclComponent from './components/DeclComponent'
-import { COMPILATION_STRATEGIES, type CompilationStrategy } from './services/compiler'
-import './App.css'
+import { COMPILATION_STRATEGIES } from './services/compiler'
 
 function App() {
-  const [compilationStrategy, setCompilationStrategy] = useState<CompilationStrategy>(COMPILATION_STRATEGIES.INLINE)
+  const [yamlContent, setYamlContent] = useState<string>('')
+  const templateName = 'SamplePanel'
+
+  useEffect(() => {
+    // Load YAML file
+    fetch(`/templates/${templateName}.yml`)
+      .then(res => res.text())
+      .then(text => setYamlContent(text))
+      .catch(err => console.error('Failed to load template:', err))
+  }, [templateName])
 
   return (
-    <div>
-      <div style={{ 
-        padding: '10px', 
-        borderBottom: '1px solid #ccc', 
-        marginBottom: '20px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '10px'
-      }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span>Compilation Strategy:</span>
-          <select
-            value={compilationStrategy}
-            onChange={(e) => setCompilationStrategy(e.target.value as CompilationStrategy)}
-            style={{
-              padding: '4px 8px',
-              fontSize: '14px',
-              border: '1px solid #ccc',
-              borderRadius: '4px'
+    <div className="h-screen bg-gray-50 flex">
+      {/* Left Panel - Monaco Editor */}
+      <div className="w-1/2 border-r border-gray-200 flex flex-col">
+        <div className="p-4 border-b border-gray-200 bg-white">
+          <h2 className="text-lg font-semibold text-gray-800">Template Editor</h2>
+        </div>
+        <div className="flex-1">
+          <Editor
+            height="100%"
+            defaultLanguage="yaml"
+            value={yamlContent}
+            theme="vs-light"
+            options={{
+              minimap: { enabled: false },
+              fontSize: 14,
+              wordWrap: 'on',
             }}
-          >
-            <option value={COMPILATION_STRATEGIES.INLINE}>Inline (Direct Evaluation)</option>
-            <option value={COMPILATION_STRATEGIES.SANDBOX}>Sandbox (Iframe Isolation)</option>
-            <option value={COMPILATION_STRATEGIES.BLOB}>Blob (Static Compilation)</option>
-          </select>
-        </label>
-        <span style={{ 
-          fontSize: '12px', 
-          color: '#666',
-          fontStyle: 'italic'
-        }}>
-          {compilationStrategy === COMPILATION_STRATEGIES.INLINE ? 'Direct evaluation' : 
-           compilationStrategy === COMPILATION_STRATEGIES.SANDBOX ? 'Sandboxed evaluation' : 
-           'Static blob compilation'}
-        </span>
+          />
+        </div>
       </div>
-      <DeclComponent src="SamplePanel" compilationStrategy={compilationStrategy} />
+
+      {/* Right Panel - Component Preview */}
+      <div className="w-1/2 flex flex-col">
+        <div className="p-4 border-b border-gray-200 bg-white">
+          <h2 className="text-lg font-semibold text-gray-800">Preview</h2>
+        </div>
+        <div className="flex-1 overflow-auto p-8 bg-white">
+          <DeclComponent src={templateName} compilationStrategy={COMPILATION_STRATEGIES.BLOB} />
+        </div>
+      </div>
     </div>
   )
 }

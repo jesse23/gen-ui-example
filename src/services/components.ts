@@ -8,6 +8,7 @@
 const componentImportMap: Record<string, () => Promise<any>> = {
   ExistWhen: () => import('../components/ExistWhen'),
   DeclComponent: () => import('../components/DeclComponent'),
+  ShadcnButton: () => import('../components/ShadcnButton'),
 }
 
 /**
@@ -40,10 +41,19 @@ export function registerComponent(name: string, component: any): void {
 export async function loadComponent(name: string): Promise<any> {
   const importFn = componentImportMap[name]
   if (importFn) {
-    const module = await importFn()
-    return module.default || module
+    try {
+      console.log(`Loading component: ${name}`)
+      const module = await importFn()
+      const component = module.default || module
+      console.log(`Successfully loaded component: ${name}`, component ? 'found' : 'not found')
+      return component
+    } catch (error) {
+      console.error(`Error importing component "${name}":`, error)
+      throw error
+    }
   }
   
+  console.warn(`Component "${name}" not found in registry. Available:`, Object.keys(componentImportMap))
   return null
 }
 
