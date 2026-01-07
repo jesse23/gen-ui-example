@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import DeclComponent from './components/DeclComponent'
-import DeclBlobComponent from './components/DeclBlobComponent'
 import { ENGINE_TYPES, type EngineType } from './services/compiler'
 import './App.css'
 
@@ -31,6 +30,7 @@ function App() {
           >
             <option value={ENGINE_TYPES.INLINE}>Inline (Direct Evaluation)</option>
             <option value={ENGINE_TYPES.SANDBOX}>Sandbox (Iframe Isolation)</option>
+            <option value={ENGINE_TYPES.BLOB}>Blob (Static Compilation)</option>
           </select>
         </label>
         <span style={{ 
@@ -38,11 +38,12 @@ function App() {
           color: '#666',
           fontStyle: 'italic'
         }}>
-          {engineType === ENGINE_TYPES.INLINE ? 'Direct evaluation' : 'Sandboxed evaluation'}
+          {engineType === ENGINE_TYPES.INLINE ? 'Direct evaluation' : 
+           engineType === ENGINE_TYPES.SANDBOX ? 'Sandboxed evaluation' : 
+           'Static blob compilation'}
         </span>
       </div>
       <DeclComponent src="example" engineType={engineType} />
-      <DeclBlobComponent src="example"/>
     </div>
   )
 }

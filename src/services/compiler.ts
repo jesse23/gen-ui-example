@@ -4,7 +4,8 @@ import { loadComponent } from './components'
 // Engine type constants
 export const ENGINE_TYPES = {
   INLINE: 'inline',
-  SANDBOX: 'sandbox'
+  SANDBOX: 'sandbox',
+  BLOB: 'blob'
 } as const
 
 export type EngineType = typeof ENGINE_TYPES[keyof typeof ENGINE_TYPES]
@@ -303,16 +304,19 @@ class IframeSandbox implements JSEngine {
 // Singleton engine instances
 const engineInstances: Map<EngineType, JSEngine> = new Map()
 
-// Engine type map
-const engineMap: Record<EngineType, () => JSEngine> = {
+// Engine type map (blob doesn't use JSEngine, it's handled separately)
+const engineMap: Record<Exclude<EngineType, 'blob'>, () => JSEngine> = {
   [ENGINE_TYPES.INLINE]: () => new InlineJsEngine(),
   [ENGINE_TYPES.SANDBOX]: () => new IframeSandbox()
 }
 
 // Factory function to get the appropriate JS engine based on engineType
 function getJSEngine(engineType: EngineType = ENGINE_TYPES.INLINE): JSEngine {
+  if (engineType === ENGINE_TYPES.BLOB) {
+    throw new Error('BLOB engine type does not use JSEngine - it uses static compilation instead')
+  }
   if (!engineInstances.has(engineType)) {
-    const engine = engineMap[engineType]()
+    const engine = engineMap[engineType as Exclude<EngineType, 'blob'>]()
     engineInstances.set(engineType, engine)
   }
   return engineInstances.get(engineType)!

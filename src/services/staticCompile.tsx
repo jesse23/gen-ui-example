@@ -1,17 +1,10 @@
-import React, { useState, useEffect } from 'react'
-import yaml from 'js-yaml'
-import { type TemplateConfig, type EngineType } from '../services/compiler'
-
-interface DeclBlobComponentProps {
-  src: string
-  engineType?: EngineType
-}
+import { type TemplateConfig } from './compiler'
 
 /**
  * Convert template with {expressions} to React.createElement calls with inlined expressions.
  * Replaces {expression} with direct JavaScript references (e.g., {count} -> data.count)
  */
-function compileTemplateToJS(template: string, dataKeys: string[], actionKeys: string[], importKeys: string[]): string {
+export function compileTemplateToJS(template: string, dataKeys: string[], actionKeys: string[], importKeys: string[]): string {
   // Helper to convert expression to JavaScript reference
   function exprToJS(expr: string): string {
     expr = expr.trim()
@@ -186,7 +179,7 @@ function compileTemplateToJS(template: string, dataKeys: string[], actionKeys: s
  * Generate JavaScript source code for a React component from a template config.
  * All expressions are inlined directly into the JavaScript code - no runtime evaluation.
  */
-function generateComponentCode(config: TemplateConfig): string {
+export function generateComponentCode(config: TemplateConfig): string {
   const dataKeys = config.data ? Object.keys(config.data) : []
   const actionKeys = config.actions ? Object.keys(config.actions) : []
   const importKeys: string[] = []
@@ -249,7 +242,6 @@ function CompiledTemplate() {
       const parsedActions = {};
       ${actionKeys.map(key => {
         const actionCode = config.actions![key]
-        // Inline the action code directly - it's already a function string
         return `parsedActions[${JSON.stringify(key)}] = () => {
         const currentData = dataRef.current;
         try {
@@ -342,66 +334,3 @@ function CompiledTemplate() {
 export default CompiledTemplate;`
 }
 
-function DeclBlobComponent({ src, engineType }: DeclBlobComponentProps) {
-  const [Component, setComponent] = useState<React.ComponentType | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    // Construct path to template: /templates/{src}.yml
-    const templatePath = `/templates/${src}.yml`
-    
-    // Load and parse YAML
-    fetch(templatePath)
-      .then((res) => {
-        if (!res.ok) {
-          throw new Error(`Failed to load template: ${res.statusText}`)
-        }
-        return res.text()
-      })
-      .then((text) => {
-        const parsed = yaml.load(text) as TemplateConfig
-        // Override engineType from props if provided
-        if (engineType !== undefined) {
-          parsed.engineType = engineType
-        }
-        
-        // Generate JavaScript code from the template
-        const componentCode = generateComponentCode(parsed)
-        
-        // Create a blob from the code
-        const blob = new Blob([componentCode], { type: 'application/javascript' })
-        const blobUrl = URL.createObjectURL(blob)
-        
-        // Dynamically import the blob
-        return import(/* @vite-ignore */ blobUrl)
-          .then((module) => {
-            const CompiledComponent = module.default
-            if (CompiledComponent) {
-              setComponent(() => CompiledComponent)
-            } else {
-              throw new Error('Component export not found in blob')
-            }
-          })
-          .finally(() => {
-            // Clean up blob URL
-            URL.revokeObjectURL(blobUrl)
-          })
-      })
-      .catch((err) => {
-        console.error('Error loading template:', err)
-        setError(err.message)
-      })
-  }, [src, engineType])
-
-  if (error) {
-    return <div style={{ color: 'red' }}>Error: {error}</div>
-  }
-
-  if (!Component) {
-    return <div>Loading...</div>
-  }
-
-  return <Component />
-}
-
-export default DeclBlobComponent
