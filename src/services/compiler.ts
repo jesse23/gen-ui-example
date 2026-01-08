@@ -57,7 +57,7 @@
  */
 
 import React, { type ReactNode, type ComponentType } from 'react'
-import { loadComponent } from './components'
+import { loadComponent, hasComponent } from './components'
 
 // ============================================================================
 // Types and Constants
@@ -130,21 +130,56 @@ function waitForSandboxReady(
 }
 
 
-function resolveComponent(tagName: string, imports: Record<string, any>): any {
-  if (!tagName.includes('-') && imports[tagName] === undefined) {
-    return tagName
+/**
+ * Extract all element tag names from view HTML
+ */
+function extractElementNames(view: string): Set<string> {
+  const elementNames = new Set<string>()
+  try {
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(view.trim(), 'text/html')
+    
+    function traverse(node: Node) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const element = node as Element
+        const tagName = element.tagName.toLowerCase()
+        elementNames.add(tagName)
+        
+        // Traverse children
+        Array.from(element.childNodes).forEach(traverse)
+      }
+    }
+    
+    if (doc.body) {
+      Array.from(doc.body.childNodes).forEach(traverse)
+    }
+  } catch (error) {
+    console.error('Error extracting element names from view:', error)
   }
+  
+  return elementNames
+}
 
-  const component = imports[tagName] || imports[toPascalCase(tagName)]
-  if (component && typeof component === 'function') {
+/**
+ * Convert element name to CamelCase (handles both kebab-case and single word)
+ */
+function toCamelCase(str: string): string {
+  if (!str.includes('-')) {
+    // Single word: capitalize first letter
+    return str.charAt(0).toUpperCase() + str.slice(1)
+  }
+  // Kebab-case: convert to PascalCase
+  return toPascalCase(str)
+}
+
+function resolveComponent(tagName: string, imports: Record<string, any>): any {
+  // Check if component exists in imports (already stored with all variants: tagName, camelName, kebabName)
+  const component = imports[tagName]
+  if (component && (typeof component === 'function' || (typeof component === 'object' && component !== null))) {
     return component
   }
-
-  if (tagName.includes('-')) {
-    console.warn(`Component "${tagName}" not found or not loaded yet. Available imports:`, Object.keys(imports))
-    return null
-  }
-
+  
+  // If not found in imports, return original tagName (for OOTB elements or web components)
   return tagName
 }
 
@@ -519,102 +554,93 @@ function initializeDataFromConfig(dataConfig: Record<string, { type: string; ini
   return initialData
 }
 
-async function loadImportsFromConfig(importsConfig: Array<Record<string, string>> | undefined): Promise<Record<string, any>> {
+/**
+ * Load components based on elements found in view HTML
+ * Ignores YAML imports config
+ */
+async function loadImportsFromView(view: string): Promise<Record<string, any>> {
   const importMap: Record<string, any> = {}
-  if (!importsConfig) {
-    return importMap
-  }
-
+  const elementNames = extractElementNames(view)
+  
   const importPromises: Promise<void>[] = []
 
-  importsConfig.forEach((imp) => {
-    Object.keys(imp).forEach((key) => {
-      const path = imp[key]
-      if (path.startsWith('/')) {
-        importMap[key] = path
-      } else {
-        const componentName = path.replace(/\.tsx$/, '')
-        const pascalComponentName = toPascalCase(componentName)
-        const pascalKey = toPascalCase(key)
-
-        const loadPromise = (async () => {
-          try {
-            // Try the key from YAML first (most likely to match registry)
-            let component = await loadComponent(pascalKey)
-            
-            if (!component && pascalComponentName !== pascalKey) {
-              // Fallback to component name from path if different
-              component = await loadComponent(pascalComponentName)
-            }
-            
-            if (component) {
-              importMap[key] = component
-              importMap[toKebabCase(key)] = component
-            } else {
-              console.error(`Component "${pascalKey}"${pascalComponentName !== pascalKey ? ` or "${pascalComponentName}"` : ''} not found in registry`)
-            }
-          } catch (error) {
-            console.error(`Failed to load component "${pascalKey}" for key "${key}":`, error)
-            // Try fallback even on error
-            if (pascalComponentName !== pascalKey) {
-              try {
-                const fallbackComponent = await loadComponent(pascalComponentName)
-                if (fallbackComponent) {
-                  importMap[key] = fallbackComponent
-                  importMap[toKebabCase(key)] = fallbackComponent
-                }
-              } catch (fallbackError) {
-                console.error(`Failed to load fallback component "${pascalComponentName}":`, fallbackError)
-              }
+  elementNames.forEach((tagName) => {
+    // Convert to CamelCase to check registry
+    const camelName = toCamelCase(tagName)
+    
+    // Check if component exists in registry
+    if (hasComponent(camelName)) {
+      const loadPromise = (async () => {
+        try {
+          const component = await loadComponent(camelName)
+          if (component) {
+            // Store under both original tagName and CamelCase name
+            importMap[tagName] = component
+            importMap[camelName] = component
+            // Also store kebab-case if different
+            const kebabName = toKebabCase(camelName)
+            if (kebabName !== tagName && kebabName !== camelName) {
+              importMap[kebabName] = component
             }
           }
-        })()
-        
-        importPromises.push(loadPromise)
-      }
-    })
+        } catch (error) {
+          console.error(`Failed to load component "${camelName}" for tag "${tagName}":`, error)
+        }
+      })()
+      
+      importPromises.push(loadPromise)
+    }
+    // If not found in registry, we'll use the original tagName as-is (OOTB element or web component)
   })
 
   // Wait for all imports to complete
-  console.log(`Waiting for ${importPromises.length} import promises to resolve...`)
-  try {
-    await Promise.all(importPromises)
-    console.log('All imports resolved successfully')
-  } catch (error) {
-    console.error('Error loading imports:', error)
+  if (importPromises.length > 0) {
+    console.log(`Loading ${importPromises.length} components from view...`)
+    try {
+      await Promise.all(importPromises)
+      console.log('All components loaded successfully')
+    } catch (error) {
+      console.error('Error loading components:', error)
+    }
   }
   
   console.log('Final importMap:', Object.keys(importMap))
   return importMap
 }
 
+/**
+ * Check if all components found in view are loaded
+ * Components that exist in registry must be loaded, others (OOTB/web components) are always considered ready
+ */
 function checkImportsLoaded(
-  importsConfig: Array<Record<string, string>> | undefined,
+  view: string,
   imports: Record<string, any>
 ): boolean {
-  if (!importsConfig) {
-    return true
-  }
+  const elementNames = extractElementNames(view)
+  const componentsToCheck: string[] = []
 
-  const expectedComponentKeys: string[] = []
-  importsConfig.forEach(imp => {
-    Object.keys(imp).forEach(key => {
-      const path = imp[key]
-      // Only check components (not paths starting with '/')
-      if (!path.startsWith('/')) {
-        expectedComponentKeys.push(key)
-        expectedComponentKeys.push(toKebabCase(key))
+  elementNames.forEach((tagName) => {
+    const camelName = toCamelCase(tagName)
+    // Only check components that exist in registry
+    if (hasComponent(camelName)) {
+      componentsToCheck.push(tagName)
+      componentsToCheck.push(camelName)
+      // Also check kebab-case variant
+      const kebabName = toKebabCase(camelName)
+      if (kebabName !== tagName && kebabName !== camelName) {
+        componentsToCheck.push(kebabName)
       }
-    })
+    }
+    // OOTB elements and web components not in registry are always ready (no loading needed)
   })
 
-  if (expectedComponentKeys.length === 0) {
+  if (componentsToCheck.length === 0) {
     return true
   }
 
-  // Check that all expected component keys are loaded and are valid React components
+  // Check that all expected components are loaded and are valid React components
   // React components can be functions or objects (like forwardRef components)
-  const allLoaded = expectedComponentKeys.every(key => {
+  const allLoaded = componentsToCheck.every(key => {
     const importValue = imports[key]
     // A valid component can be:
     // 1. A function (function components)
@@ -635,9 +661,9 @@ function checkImportsLoaded(
   })
   
   if (!allLoaded) {
-    const missing = expectedComponentKeys.filter(key => !imports[key] || typeof imports[key] !== 'function')
+    const missing = componentsToCheck.filter(key => !imports[key] || (typeof imports[key] !== 'function' && (typeof imports[key] !== 'object' || imports[key] === null)))
     console.log('Missing imports:', missing)
-    console.log('Expected component keys (excluding paths):', expectedComponentKeys)
+    console.log('Expected component keys:', componentsToCheck)
     console.log('Available imports:', Object.keys(imports).map(k => ({ key: k, type: typeof imports[k], isFunction: typeof imports[k] === 'function' })))
   }
   
@@ -647,18 +673,17 @@ function checkImportsLoaded(
 type CreateComponentDeps = {
   React: typeof React
   initializeDataFromConfig: typeof initializeDataFromConfig
-  loadImportsFromConfig: typeof loadImportsFromConfig
   checkImportsLoaded: typeof checkImportsLoaded
   renderTemplate: (data: Record<string, any>, actions: Record<string, Function>, imports: Record<string, any>, expressionResults: Map<string, any>) => ReactNode
   parseActions: (actions: Record<string, string> | undefined, getData: () => Record<string, any>, setData: (data: Record<string, any>) => void) => Record<string, Function>
-  evaluateExpressions?: (view: string, data: Record<string, any>, actions: Record<string, Function>, imports: Record<string, any>) => Promise<Map<string, any>>
+  evaluateExpressions?: (view: string, data: Record<string, any>, actions: Record<string, Function>) => Promise<Map<string, any>>
 }
 
 function createComponent(
   config: ComponentDefinition,
   deps: CreateComponentDeps
 ): ComponentType {
-  const { React, initializeDataFromConfig, loadImportsFromConfig, checkImportsLoaded, renderTemplate, parseActions, evaluateExpressions } = deps
+  const { React, initializeDataFromConfig, checkImportsLoaded, renderTemplate, parseActions, evaluateExpressions } = deps
 
   return function CompiledTemplate() {
     const [data, setData] = React.useState<Record<string, any>>({})
@@ -684,30 +709,29 @@ function createComponent(
     }, [data, config.actions])
 
     React.useEffect(() => {
-      if (config.imports) {
-        const timeoutId = setTimeout(() => {
-          console.error('Component loading timeout - imports may have failed to load')
-        }, 10000) // 10 second timeout
-        
-        loadImportsFromConfig(config.imports)
-          .then((imports) => {
-            clearTimeout(timeoutId)
-            setImports(imports)
-          })
-          .catch((error) => {
-            clearTimeout(timeoutId)
-            console.error('Failed to load imports:', error)
-            setImports({}) // Set empty imports to prevent infinite loading
-          })
-      }
-    }, [config.imports])
+      // Load components based on view elements
+      const timeoutId = setTimeout(() => {
+        console.error('Component loading timeout - components may have failed to load')
+      }, 10000) // 10 second timeout
+      
+      loadImportsFromView(config.view)
+        .then((imports) => {
+          clearTimeout(timeoutId)
+          setImports(imports)
+        })
+        .catch((error) => {
+          clearTimeout(timeoutId)
+          console.error('Failed to load components:', error)
+          setImports({}) // Set empty imports to prevent infinite loading
+        })
+    }, [config.view])
 
     React.useEffect(() => {
       if (evaluateExpressions) {
         const hasData = Object.keys(data).length > 0
-        const hasImports = !config.imports || Object.keys(imports).length > 0
-        if (hasData && hasImports) {
-          evaluateExpressions(config.view, data, actions, imports).then(setExpressionResults)
+        // Components are always considered ready (OOTB elements don't need loading)
+        if (hasData) {
+          evaluateExpressions(config.view, data, actions).then(setExpressionResults)
         }
       }
     }, [config.view, data, actions, imports])
@@ -716,10 +740,9 @@ function createComponent(
       return React.createElement('div', null, 'Loading actions...')
     }
 
-    const importsLoaded = checkImportsLoaded(config.imports, imports)
+    const importsLoaded = checkImportsLoaded(config.view, imports)
     if (!importsLoaded) {
-      console.log('Imports not loaded yet, waiting...', {
-        expected: config.imports?.flatMap(imp => Object.keys(imp)),
+      console.log('Components not loaded yet, waiting...', {
         loaded: Object.keys(imports),
         imports
       })
@@ -739,18 +762,14 @@ function createComponent(
 function compileTemplateToJS(config: ComponentDefinition): string {
   const dataKeys = config.data ? Object.keys(config.data) : []
   const actionKeys = config.actions ? Object.keys(config.actions) : []
-  const importKeys: string[] = []
-  if (config.imports) {
-    config.imports.forEach(imp => {
-      Object.keys(imp).forEach(key => {
-        importKeys.push(key)
-        const kebab = key.replace(/([A-Z])/g, '-$1').toLowerCase().replace(/^-/, '')
-        if (kebab !== key) {
-          importKeys.push(kebab)
-        }
-      })
-    })
-  }
+  
+  // Prebuild component map: extract elements, convert to CamelCase, check registry
+  const elementNames = extractElementNames(config.view)
+  const componentMap = new Map<string, boolean>() // tagName -> isRegisteredComponent
+  elementNames.forEach(tagName => {
+    const camelName = toCamelCase(tagName)
+    componentMap.set(tagName, hasComponent(camelName))
+  })
 
   // Compile template to JavaScript code
   function exprToJS(expr: string): string {
@@ -762,22 +781,14 @@ function compileTemplateToJS(config: ComponentDefinition): string {
     if (actionKeys.includes(expr)) {
       return `actions.${expr}`
     }
-    if (importKeys.includes(expr)) {
-      // Use bracket notation for kebab-case keys, dot notation for valid identifiers
-      return expr.includes('-') ? `imports[${JSON.stringify(expr)}]` : `imports.${expr}`
-    }
 
+    // Components are HTML elements, not expressions - no need to handle them here
     let jsExpr = expr
     dataKeys.forEach(key => {
       jsExpr = jsExpr.replace(new RegExp(`\\b${key}\\b`, 'g'), `data.${key}`)
     })
     actionKeys.forEach(key => {
       jsExpr = jsExpr.replace(new RegExp(`\\b${key}\\b`, 'g'), `actions.${key}`)
-    })
-    importKeys.forEach(key => {
-      // Use bracket notation for kebab-case keys, dot notation for valid identifiers
-      const replacement = key.includes('-') ? `imports[${JSON.stringify(key)}]` : `imports.${key}`
-      jsExpr = jsExpr.replace(new RegExp(`\\b${key}\\b`, 'g'), replacement)
     })
 
     return jsExpr
@@ -844,9 +855,10 @@ function compileTemplateToJS(config: ComponentDefinition): string {
         }
       })
 
-      const isComponent = tagName.includes('-') || importKeys.includes(tagName)
-      const component = isComponent
-        ? `(imports[${JSON.stringify(tagName)}] || imports.${toPascalCase(tagName)} || ${JSON.stringify(tagName)})`
+      // Use prebuilt component map: if registered, use imports[tagName], otherwise use tagName
+      const isRegisteredComponent = componentMap.get(tagName) ?? false
+      const component = isRegisteredComponent
+        ? `(imports[${JSON.stringify(tagName)}] || ${JSON.stringify(tagName)})`
         : JSON.stringify(tagName)
 
       const propsStr = props.length > 0 ? `{ ${props.join(', ')} }` : '{}'
@@ -926,12 +938,11 @@ async function compileTemplateToJsBlobComponent(config: ComponentDefinition): Pr
       throw new Error('createComponent default export not found in blob')
     }
     return createCompiledComponent(
-      { data: config.data, imports: config.imports },
+      { data: config.data, view: config.view },
       {
         React,
         createComponent,
         initializeDataFromConfig,
-        loadImportsFromConfig,
         checkImportsLoaded
       }
     )
@@ -944,7 +955,6 @@ function compileTemplateToInlineComponent(config: ComponentDefinition, effective
   return createComponent(config, {
     React,
     initializeDataFromConfig,
-    loadImportsFromConfig,
     checkImportsLoaded,
     renderTemplate: (_data, _actions, imports, expressionResults) => {
       function evaluateExpression(expr: string): any {
@@ -962,10 +972,6 @@ function compileTemplateToInlineComponent(config: ComponentDefinition, effective
           const tagName = element.tagName.toLowerCase()
           const attrs = parseAttributes(element, evaluateExpression)
           const Component = resolveComponent(tagName, imports)
-          
-          if (Component === null) {
-            return null
-          }
 
           const children: ReactNode[] = []
           Array.from(element.childNodes).forEach((child, idx) => {
@@ -1022,16 +1028,14 @@ function compileTemplateToInlineComponent(config: ComponentDefinition, effective
       }
       return parsedActions
     },
-    evaluateExpressions: async (view, data, actions, imports) => {
+    evaluateExpressions: async (view, data, actions) => {
       const expressions = extractExpressions(view)
       if (expressions.length === 0) {
         return new Map()
       }
 
+      // Components are HTML elements, not part of expression context
       const context: Record<string, any> = { ...data }
-      Object.keys(imports).forEach(key => {
-        context[key] = imports[key]
-      })
 
       const results = new Map<string, any>()
       await Promise.all(

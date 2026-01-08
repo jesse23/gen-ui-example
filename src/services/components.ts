@@ -27,6 +27,16 @@ export function registerComponent(name: string, component: any): void {
 }
 
 /**
+ * Check if a component exists in the registry.
+ * 
+ * @param name - Component name in PascalCase (e.g., "ExistWhen")
+ * @returns true if component exists in registry, false otherwise
+ */
+export function hasComponent(name: string): boolean {
+  return name in componentImportMap
+}
+
+/**
  * Load a component by name.
  * Currently loads from local registry, but can be extended to support remote components.
  * 

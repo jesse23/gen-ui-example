@@ -1,11 +1,4 @@
 view: |
-  <div>
-    <exist-when condition="{count > 0}">
-      <a href="https://vite.dev" target="_blank">
-        <img src="{ViteLogo}" class="logo" alt="Vite logo" />
-      </a>
-    </exist-when>
-  </div>
   <h1>Vite + React</h1>
   <div class="card">
     <shadcn-button onClick="{incrementCount}">
@@ -15,9 +8,13 @@ view: |
       Edit <code>src/App.tsx</code> and save to test HMR
     </p>
   </div>
-  <p class="read-the-docs">
-    Click on the Vite and React logos to learn more
-  </p>
+  <div>
+    <exist-when condition="{count > 0}">
+      <a href="https://vite.dev" target="_blank">
+        <img src="/vite.svg" class="logo" alt="Vite logo" />
+      </a>
+    </exist-when>
+  </div>
 
 data:
   count:
@@ -28,7 +25,6 @@ actions:
   incrementCount: "(data, setData) => setData({ ...data, count: data.count + 1 })"
 
 imports:
-  - ViteLogo: "/vite.svg"
   - ExistWhen: "ExistWhen.tsx"
   - ShadcnButton: "ShadcnButton.tsx"
 
