@@ -40,8 +40,7 @@
  *             └─> (via callbacks passed to createComponent)
  *                  ├─> renderTemplate callback (inline template parsing)
  *                  │    ├─> toReactPropName (helper)
- *                  │    ├─> toPascalCase (helper)
- *                  │    └─> toKebabCase (helper)
+ *                  │    └─> toPascalCase (helper)
  *                  ├─> parseActions callback
  *                  │    └─> getJSEngine -> engine.executeAction
  *                  │         ├─> InlineJsEngine (JS engine)
@@ -161,9 +160,10 @@ function extractElementNames(view: string): Set<string> {
 }
 
 /**
- * Convert element name to CamelCase (handles both kebab-case and single word)
+ * Convert element name to PascalCase (handles both kebab-case and single word)
+ * This matches the registry format where components are registered in PascalCase
  */
-function toCamelCase(str: string): string {
+function toPascalCaseFromTag(str: string): string {
   if (!str.includes('-')) {
     // Single word: capitalize first letter
     return str.charAt(0).toUpperCase() + str.slice(1)
@@ -173,8 +173,9 @@ function toCamelCase(str: string): string {
 }
 
 function resolveComponent(tagName: string, imports: Record<string, any>): any {
-  // Check if component exists in imports (already stored with all variants: tagName, camelName, kebabName)
-  const component = imports[tagName]
+  // Convert tagName to PascalCase to match importMap keys (matching registry format)
+  const pascalName = toPascalCaseFromTag(tagName)
+  const component = imports[pascalName]
   if (component && (typeof component === 'function' || (typeof component === 'object' && component !== null))) {
     return component
   }
@@ -188,13 +189,6 @@ function toPascalCase(str: string): string {
     .split('-')
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join('')
-}
-
-function toKebabCase(str: string): string {
-  return str
-    .replace(/([A-Z])/g, '-$1')
-    .toLowerCase()
-    .replace(/^-/, '')
 }
 
 function toReactPropName(attrName: string): string {
@@ -565,26 +559,20 @@ async function loadImportsFromView(view: string): Promise<Record<string, any>> {
   const importPromises: Promise<void>[] = []
 
   elementNames.forEach((tagName) => {
-    // Convert to CamelCase to check registry
-    const camelName = toCamelCase(tagName)
+    // Convert to PascalCase to check registry
+    const pascalName = toPascalCaseFromTag(tagName)
     
     // Check if component exists in registry
-    if (hasComponent(camelName)) {
+    if (hasComponent(pascalName)) {
       const loadPromise = (async () => {
         try {
-          const component = await loadComponent(camelName)
+          const component = await loadComponent(pascalName)
           if (component) {
-            // Store under both original tagName and CamelCase name
-            importMap[tagName] = component
-            importMap[camelName] = component
-            // Also store kebab-case if different
-            const kebabName = toKebabCase(camelName)
-            if (kebabName !== tagName && kebabName !== camelName) {
-              importMap[kebabName] = component
-            }
+            // Store under PascalCase (matching registry format)
+            importMap[pascalName] = component
           }
         } catch (error) {
-          console.error(`Failed to load component "${camelName}" for tag "${tagName}":`, error)
+          console.error(`Failed to load component "${pascalName}" for tag "${tagName}":`, error)
         }
       })()
       
@@ -620,16 +608,11 @@ function checkImportsLoaded(
   const componentsToCheck: string[] = []
 
   elementNames.forEach((tagName) => {
-    const camelName = toCamelCase(tagName)
+    const pascalName = toPascalCaseFromTag(tagName)
     // Only check components that exist in registry
-    if (hasComponent(camelName)) {
-      componentsToCheck.push(tagName)
-      componentsToCheck.push(camelName)
-      // Also check kebab-case variant
-      const kebabName = toKebabCase(camelName)
-      if (kebabName !== tagName && kebabName !== camelName) {
-        componentsToCheck.push(kebabName)
-      }
+    if (hasComponent(pascalName)) {
+      // Check pascalName since that's what we store in importMap
+      componentsToCheck.push(pascalName)
     }
     // OOTB elements and web components not in registry are always ready (no loading needed)
   })
@@ -763,12 +746,12 @@ function compileTemplateToJS(config: ComponentDefinition): string {
   const dataKeys = config.data ? Object.keys(config.data) : []
   const actionKeys = config.actions ? Object.keys(config.actions) : []
   
-  // Prebuild component map: extract elements, convert to CamelCase, check registry
+  // Prebuild component map: extract elements, convert to PascalCase, check registry
   const elementNames = extractElementNames(config.view)
-  const componentMap = new Map<string, boolean>() // tagName -> isRegisteredComponent
+  const componentMap = new Map<string, { isRegistered: boolean; pascalName: string }>() // tagName -> { isRegistered, pascalName }
   elementNames.forEach(tagName => {
-    const camelName = toCamelCase(tagName)
-    componentMap.set(tagName, hasComponent(camelName))
+    const pascalName = toPascalCaseFromTag(tagName)
+    componentMap.set(tagName, { isRegistered: hasComponent(pascalName), pascalName })
   })
 
   // Compile template to JavaScript code
@@ -855,10 +838,10 @@ function compileTemplateToJS(config: ComponentDefinition): string {
         }
       })
 
-      // Use prebuilt component map: if registered, use imports[tagName], otherwise use tagName
-      const isRegisteredComponent = componentMap.get(tagName) ?? false
-      const component = isRegisteredComponent
-        ? `(imports[${JSON.stringify(tagName)}] || ${JSON.stringify(tagName)})`
+      // Use prebuilt component map: if registered, use imports[pascalName], otherwise use tagName
+      const componentInfo = componentMap.get(tagName)
+      const component = componentInfo?.isRegistered
+        ? `(imports[${JSON.stringify(componentInfo.pascalName)}] || ${JSON.stringify(tagName)})`
         : JSON.stringify(tagName)
 
       const propsStr = props.length > 0 ? `{ ${props.join(', ')} }` : '{}'
