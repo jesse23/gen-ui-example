@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import type { Plugin } from 'vite'
+import path from 'path'
 
 // Plugin to set CSP headers conditionally for preview server only
 function cspHeadersPlugin(): Plugin {
@@ -35,8 +36,19 @@ export default defineConfig({
     cspHeadersPlugin(),
   ],
   resolve: {
-    alias: {
-      'monaco-editor': 'monaco-editor/esm/vs/editor/editor.api.js',
-    },
+    alias: [
+      {
+        find: '@/lib/utils',
+        replacement: path.resolve(__dirname, './src/services/shadCnUtils.ts'),
+      },
+      {
+        find: '@',
+        replacement: path.resolve(__dirname, './src'),
+      },
+      {
+        find: 'monaco-editor',
+        replacement: 'monaco-editor/esm/vs/editor/editor.api.js',
+      },
+    ],
   },
 })

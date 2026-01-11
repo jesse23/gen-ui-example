@@ -8,7 +8,11 @@
 const componentImportMap: Record<string, () => Promise<any>> = {
   ExistWhen: () => import('../components/ExistWhen'),
   DeclComponent: () => import('../components/DeclComponent'),
-  ShadcnButton: () => import('../components/ShadcnButton'),
+  Button: () => import('../components/ui/button'),
+  Card: () => import('../components/ui/card'),
+  Breadcrumb: () => import('../components/ui/breadcrumb'),
+  Input: () => import('../components/ui/input'),
+  Label: () => import('../components/ui/label'),
 }
 
 /**
@@ -63,7 +67,17 @@ export async function loadComponent(name: string): Promise<any> {
     try {
       console.log(`Loading component: ${name}`)
       const module = await importFn()
-      const component = module.default || module
+      // Try default export first, then named export with same name, then the module itself
+      let component = module.default
+      if (!component && module[name]) {
+        component = module[name]
+      }
+      if (!component && typeof module === 'function') {
+        component = module
+      }
+      if (!component) {
+        component = module
+      }
       console.log(`Successfully loaded component: ${name}`, component ? 'found' : 'not found')
       return component
     } catch (error) {

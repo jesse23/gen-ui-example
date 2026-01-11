@@ -5,14 +5,45 @@ export default {
     "./src/**/*.{js,ts,jsx,tsx}",
   ],
   safelist: [
-    // Button component classes - explicit list to ensure they're included
-    'inline-flex',
-    'items-center',
-    'justify-center',
-    'whitespace-nowrap',
-    'rounded-md',
-    'text-sm',
+    // Common utility classes for LLM-generated components and YAML templates
+    // These ensure classes are available at runtime even if not found in static source files
+    
+    // Spacing utilities (margins, padding)
+    {
+      pattern: /^(m|mx|my|mt|mb|ml|mr|p|px|py|pt|pb|pl|pr|gap)-(0|1|2|3|4|5|6|8|10|12|16|20|24)$/,
+    },
+    
+    // Text utilities
+    {
+      pattern: /^text-(xs|sm|base|lg|xl|2xl|3xl|4xl|5xl|6xl)$/,
+    },
+    {
+      pattern: /^text-(gray|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(50|100|200|300|400|500|600|700|800|900)$/,
+    },
+    {
+      pattern: /^font-(thin|extralight|light|normal|medium|semibold|bold|extrabold|black)$/,
+    },
     'font-medium',
+    
+    // Layout utilities
+    'flex', 'flex-col', 'flex-row', 'inline-flex',
+    'items-center', 'items-start', 'items-end', 'items-stretch',
+    'justify-center', 'justify-start', 'justify-end', 'justify-between',
+    'w-full', 'h-full', 'w-auto', 'h-auto',
+    'h-9', 'h-11', 'w-10',
+    
+    // Background and border
+    {
+      pattern: /^bg-(gray|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(50|100|200|300|400|500|600|700|800|900)$/,
+    },
+    {
+      pattern: /^border-(gray|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(50|100|200|300|400|500|600|700|800|900)$/,
+    },
+    'rounded', 'rounded-md', 'rounded-lg', 'rounded-xl',
+    'border', 'border-2',
+    
+    // Button-specific (from ShadcnButton)
+    'whitespace-nowrap',
     'ring-offset-background',
     'transition-colors',
     'focus-visible:outline-none',
@@ -21,12 +52,21 @@ export default {
     'focus-visible:ring-offset-2',
     'disabled:pointer-events-none',
     'disabled:opacity-50',
-    'bg-primary',
-    'text-primary-foreground',
-    'hover:bg-primary/90',
+    // Custom color utilities (required for Tailwind v4)
+    'bg-primary', 'text-primary-foreground', 'hover:bg-primary/90',
+    'bg-destructive', 'text-destructive-foreground', 'hover:bg-destructive/90',
+    'bg-secondary', 'text-secondary-foreground', 'hover:bg-secondary/80',
+    'bg-background', 'bg-accent', 'text-accent-foreground', 'hover:bg-accent',
+    'bg-popover', 'text-popover-foreground',
+    'border-input', 'text-primary',
     'h-10',
     'px-4',
     'py-2',
+    
+    // Common interactive states
+    'hover:opacity-90', 'hover:opacity-80',
+    'cursor-pointer',
+    'transition-all',
   ],
   theme: {
     extend: {

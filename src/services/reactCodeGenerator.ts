@@ -1,12 +1,10 @@
 /**
- * GenUI Service
+ * React Code Generator Service
  * 
- * This service generates React components from natural language prompts using OpenAI.
- * It uses blob imports to dynamically load the generated component code.
+ * This service generates React component code from natural language prompts using OpenAI.
  */
 
-import React, { type ComponentType } from 'react'
-import { getComponentNames, loadComponent } from './components'
+import { getComponentNames } from './components'
 
 /**
  * Build a description of available components for the system prompt
@@ -21,7 +19,7 @@ function buildComponentContext(): string {
 ${components.map(name => `- ${name}`).join('\n')}
 
 These components will be passed to your function via the 'deps' parameter.
-You can access them like: deps.Button, deps.Card, etc.`
+You can access them like: deps.Button, deps.Card, etc. Or you can use OOTB DOM elements.`
 }
 
 // ============================================================================
@@ -106,67 +104,26 @@ function extractModuleCode(response: string): string {
   return response.trim()
 }
 
-// ============================================================================
-// Blob Import (similar to compiler.ts)
-// ============================================================================
-
-/**
- * Load a React component from generated ES6 module code using blob import
- */
-async function loadComponentFromBlob(
-  moduleCode: string,
-  componentMap: Record<string, any>
-): Promise<ComponentType> {
-  // Create blob with the module code
-  const blob = new Blob([moduleCode], { type: 'application/javascript' })
-  const blobUrl = URL.createObjectURL(blob)
-
-  try {
-    // Import the blob as an ES module
-    const module = await import(/* @vite-ignore */ blobUrl)
-    const ComponentFactory = module.default
-    
-    if (!ComponentFactory || typeof ComponentFactory !== 'function') {
-      throw new Error('Generated module must export a default function')
-    }
-
-    // Call the factory function with React and component map (deps)
-    const Component = ComponentFactory(React, componentMap)
-    
-    if (!Component) {
-      throw new Error('Component factory did not return a valid component')
-    }
-
-    return Component
-  } catch (error) {
-    console.error('Error loading component from blob:', error)
-    console.error('Generated code:', moduleCode)
-    throw error
-  } finally {
-    // Clean up blob URL
-    URL.revokeObjectURL(blobUrl)
-  }
-}
 
 // ============================================================================
 // Main API
 // ============================================================================
 
 /**
- * Generate a React component from a natural language prompt
+ * Generate React component code from a natural language prompt
  * 
  * @param userPrompt - Natural language description of the UI to generate
- * @returns Promise that resolves to a React component
+ * @returns Promise that resolves to the generated ES6 module code as a string
  * 
  * @example
  * ```ts
- * const Component = await generateUI('Create a button that says "Click me"')
- * ReactDOM.createRoot(el).render(React.createElement(Component))
+ * const code = await generate('Create a button that says "Click me"')
+ * // code is the ES6 module string that exports a default function
  * ```
  */
-export async function generateUI(
+export async function generate(
   userPrompt: string
-): Promise<ComponentType> {
+): Promise<string> {
   // Build system prompt with component context
   const componentContext = buildComponentContext()
   const systemPrompt = `You are a React component generator. Generate ES6 module code that exports a default function.
@@ -188,6 +145,7 @@ Requirements:
 4. Return a valid React component function (a function that can be used as a component, which returns React elements when called)
 5. Use Tailwind CSS classes for styling (e.g., className: 'p-4 bg-gray-100')
 6. Only use components that are available in the component map
+7. For radio buttons and checkboxes, use accent-{color} classes (e.g., accent-red-600) instead of text-{color} classes
 
 ${componentContext}
 
@@ -211,23 +169,5 @@ Generate only the ES6 module code, no explanations or markdown outside code bloc
   // Extract module code from response
   const moduleCode = extractModuleCode(response)
   
-  // Load components from the component map
-  const componentMap: Record<string, any> = {}
-  const componentNames = getComponentNames()
-  
-  for (const name of componentNames) {
-    try {
-      const component = await loadComponent(name)
-      if (component) {
-        componentMap[name] = component
-      }
-    } catch (error) {
-      console.warn(`Failed to load component "${name}" for component map:`, error)
-    }
-  }
-  
-  // Load component from blob
-  const Component = await loadComponentFromBlob(moduleCode, componentMap)
-  
-  return Component
+  return moduleCode
 }
