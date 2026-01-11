@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import Editor from '@monaco-editor/react'
 import DeclComponent from './components/DeclComponent'
 import { COMPILATION_STRATEGIES } from './services/compiler'
+import AiComponentExample from './components/AiComponentExample'
 
 function App() {
   const [yamlContent, setYamlContent] = useState<string>('')
@@ -44,6 +45,7 @@ function App() {
         </div>
         <div className="flex-1 overflow-auto p-8 bg-white">
           <DeclComponent src={templateName} compilationStrategy={COMPILATION_STRATEGIES.BLOB} />
+          <AiComponentExample />
         </div>
       </div>
     </div>

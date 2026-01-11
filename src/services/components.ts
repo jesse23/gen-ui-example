@@ -37,6 +37,15 @@ export function hasComponent(name: string): boolean {
 }
 
 /**
+ * Get all registered component names.
+ * 
+ * @returns Array of component names in PascalCase
+ */
+export function getComponentNames(): string[] {
+  return Object.keys(componentImportMap)
+}
+
+/**
  * Load a component by name.
  * Currently loads from local registry, but can be extended to support remote components.
  * 
