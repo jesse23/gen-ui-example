@@ -57,6 +57,7 @@
 
 import React, { type ReactNode, type ComponentType } from 'react'
 import { loadComponent, hasComponent } from './components'
+import { loadComponentFromBlob } from './blobJsLoader'
 
 // ============================================================================
 // Types and Constants
@@ -911,27 +912,16 @@ function compileTemplateToJS(config: ComponentDefinition): string {
 
 async function compileTemplateToJsBlobComponent(config: ComponentDefinition): Promise<ComponentType> {
   const componentCode = compileTemplateToJS(config)
-  const blob = new Blob([componentCode], { type: 'application/javascript' })
-  const blobUrl = URL.createObjectURL(blob)
-
-  try {
-    const module = await import(/* @vite-ignore */ blobUrl)
-    const createCompiledComponent = module.default
-    if (!createCompiledComponent) {
-      throw new Error('createComponent default export not found in blob')
+  return loadComponentFromBlob(
+    componentCode,
+    { data: config.data, view: config.view },
+    {
+      React,
+      createComponent,
+      initializeDataFromConfig,
+      checkImportsLoaded
     }
-    return createCompiledComponent(
-      { data: config.data, view: config.view },
-      {
-        React,
-        createComponent,
-        initializeDataFromConfig,
-        checkImportsLoaded
-      }
-    )
-  } finally {
-    URL.revokeObjectURL(blobUrl)
-  }
+  )
 }
 
 function compileTemplateToInlineComponent(config: ComponentDefinition, effectiveStrategy: CompilationStrategy): ComponentType {

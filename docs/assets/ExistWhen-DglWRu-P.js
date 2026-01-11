@@ -1,0 +1,1 @@
+import{b as e,x as t}from"./index-vmVyJeuJ.js";var n=t(),r=e();function i(e){let t=(0,n.c)(3),{condition:i,children:a}=e,o;return t[0]!==a||t[1]!==i?(o=i?(0,r.jsx)(r.Fragment,{children:a}):null,t[0]=a,t[1]=i,t[2]=o):o=t[2],o}var a=i;export{i as ExistWhen,a as default};
