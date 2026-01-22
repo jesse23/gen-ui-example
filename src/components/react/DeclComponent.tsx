@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import yaml from 'js-yaml'
-import { compileTemplate, type ComponentDefinition, type CompilationStrategy, COMPILATION_STRATEGIES } from '../services/compiler'
+import { compileTemplate, type ComponentDefinition, type CompilationStrategy, COMPILATION_STRATEGIES } from '../../services/compiler'
 
 interface DeclComponentProps {
   src: string
@@ -12,9 +12,10 @@ function DeclComponent({ src, compilationStrategy }: DeclComponentProps) {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    // Construct path to template: /templates/{src}.yml
+    // Construct path to template: {base}/templates/{src}.yml
     // Templates are in public/templates directory (available in both dev and build)
-    const templatePath = `/templates/${src}.yml`
+    const base = import.meta.env.BASE_URL
+    const templatePath = `${base}templates/${src}.yml`
     
     // Load and parse YAML
     fetch(templatePath)

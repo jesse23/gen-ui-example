@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import Editor from '@monaco-editor/react'
-import DeclGenComponent from '../components/DeclGenComponent'
+import DeclGenComponent from '../components/react/DeclGenComponent'
 import { getPageMetadata } from './pages'
 import { Button } from '../components/ui/button'
 import { generate, type DeclStructure } from '../services/declCodeGenerator'

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, type ComponentType, type ReactNode } from 'react'
 import Editor from '@monaco-editor/react'
-import { generate } from '../services/reactCodeGenerator'
-import { loadComponentFromBlob } from '../services/blobJsLoader'
+import { generate } from '../../services/reactCodeGenerator'
+import { loadComponentFromBlob } from '../../services/blobJsLoader'
 import Spinner from './Spinner'
 
 // Error Boundary component to catch rendering errors

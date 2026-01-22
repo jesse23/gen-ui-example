@@ -1,5 +1,5 @@
-import { Router, Route } from './components/Router'
-import BreadcrumbNav from './components/BreadcrumbNav'
+import { Router, Route } from './components/react/Router'
+import BreadcrumbNav from './components/react/BreadcrumbNav'
 import Home from './pages/Home'
 import ReactGenExample from './pages/ReactGenExample'
 import DeclExample from './pages/DeclExample'

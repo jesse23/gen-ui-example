@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import Editor from '@monaco-editor/react'
-import DeclComponent from '../components/DeclComponent'
+import DeclComponent from '../components/react/DeclComponent'
 import { COMPILATION_STRATEGIES } from '../services/compiler'
 import { getPageMetadata } from './pages'
 
@@ -12,7 +12,8 @@ export default function DeclExample() {
 
   useEffect(() => {
     // Load YAML file
-    fetch(`/templates/${templateName}.yml`)
+    const base = import.meta.env.BASE_URL
+    fetch(`${base}templates/${templateName}.yml`)
       .then(res => res.text())
       .then(text => setYamlContent(text))
       .catch(err => console.error('Failed to load template:', err))

@@ -6,13 +6,13 @@ import {
   BreadcrumbLink,
   BreadcrumbList,
   BreadcrumbSeparator,
-} from './ui/breadcrumb'
+} from '../ui/breadcrumb'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from './ui/dropdown-menu'
+} from '../ui/dropdown-menu'
 import {
   Dialog,
   DialogContent,
@@ -20,13 +20,13 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from './ui/dialog'
-import { Button } from './ui/button'
-import { Input } from './ui/input'
-import { Label } from './ui/label'
+} from '../ui/dialog'
+import { Button } from '../ui/button'
+import { Input } from '../ui/input'
+import { Label } from '../ui/label'
 import { ChevronDown, Settings } from 'lucide-react'
-import { getPageMetadata, getNonHomePages } from '../pages/pages'
-import { getApiKey, setApiKey, getApiKeyFromEnvironment } from '../services/openai'
+import { getPageMetadata, getNonHomePages } from '../../pages/pages'
+import { getApiKey, setApiKey, getApiKeyFromEnvironment } from '../../services/openai'
 
 export default function BreadcrumbNav() {
   const router = useRouter()

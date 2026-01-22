@@ -1,4 +1,4 @@
-import { useRouter } from '../components/Router'
+import { useRouter } from '../components/react/Router'
 import { Card } from '../components/ui/card'
 import { getPageMetadata, getNonHomePages } from './pages'
 

@@ -1,7 +1,7 @@
 import React, { type ReactNode } from 'react'
 import { useForm } from 'react-hook-form'
-import { Form, FormItem } from './ui/form'
-import { loadAction } from '../services/actions'
+import { Form, FormItem } from '../ui/form'
+import { loadAction } from '../../services/actions'
 import { cn } from '@/lib/utils'
 
 interface DeclFormProps {

@@ -56,7 +56,7 @@
  */
 
 import React, { type ReactNode, type ComponentType } from 'react'
-import { loadComponent, hasComponent } from './components'
+import { loadComponent, hasComponent } from './reactComponents'
 import { loadComponentFromBlob } from './blobJsLoader'
 
 // ============================================================================
@@ -211,6 +211,20 @@ function toReactPropName(attrName: string): string {
   return attrName
 }
 
+/**
+ * Resolve absolute paths (starting with /) to include the Vite base URL
+ * This ensures assets in public/ directory load correctly
+ */
+function resolvePath(path: string): string {
+  if (path.startsWith('/') && !path.startsWith('//')) {
+    const base = import.meta.env.BASE_URL
+    // Remove trailing slash from base if present, then add path
+    const basePath = base.endsWith('/') ? base.slice(0, -1) : base
+    return `${basePath}${path}`
+  }
+  return path
+}
+
 function extractExpressions(template: string): string[] {
   const expressions: Set<string> = new Set()
 
@@ -304,6 +318,9 @@ function parseAttributes(
     let value: any = attr.value
     if (value.startsWith('{') && value.endsWith('}')) {
       value = evaluateExpression(value.slice(1, -1))
+    } else if (typeof value === 'string' && (attr.name === 'src' || attr.name === 'href')) {
+      // Resolve absolute paths for src and href attributes
+      value = resolvePath(value)
     }
     attrs[reactName] = value
   })
@@ -809,12 +826,18 @@ function compileTemplateToJS(config: ComponentDefinition): string {
 
   function attributesToJS(element: Element): string[] {
     const props: string[] = []
+    const base = import.meta.env.BASE_URL
     Array.from(element.attributes).forEach((attr) => {
       const reactName = toReactPropName(attr.name)
       let value = attr.value
       if (value.startsWith('{') && value.endsWith('}')) {
         props.push(`${reactName}: ${exprToJS(value.slice(1, -1))}`)
       } else {
+        // Resolve absolute paths for src and href attributes
+        if ((attr.name === 'src' || attr.name === 'href') && value.startsWith('/') && !value.startsWith('//')) {
+          const basePath = base.endsWith('/') ? base.slice(0, -1) : base
+          value = `${basePath}${value}`
+        }
         props.push(`${reactName}: ${JSON.stringify(value)}`)
       }
     })

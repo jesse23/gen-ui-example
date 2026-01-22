@@ -1,11 +1,11 @@
 import React, { useState, useEffect, type ReactNode } from 'react'
-import { type DeclStructure, type DeclElement } from '../services/declCodeGenerator'
+import { type DeclStructure, type DeclElement } from '../../services/declCodeGenerator'
 import { 
   loadAllComponents, 
   loadAllActions, 
   renderDeclElement, 
   type RenderContext 
-} from '../services/declComponentUtils'
+} from '../../services/declComponentUtils'
 import Spinner from './Spinner'
 
 interface DeclGenComponentProps {

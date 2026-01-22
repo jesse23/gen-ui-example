@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import ReactGenComponent from '../components/ReactGenComponent'
+import ReactGenComponent from '../components/react/ReactGenComponent'
 import { getPageMetadata } from './pages'
 import { Button } from '../components/ui/button'
 

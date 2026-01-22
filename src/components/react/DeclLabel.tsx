@@ -1,4 +1,4 @@
-import { Label } from './ui/label'
+import { Label } from '../ui/label'
 
 interface DeclLabelProps {
   text?: string

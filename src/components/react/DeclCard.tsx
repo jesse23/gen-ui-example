@@ -6,7 +6,7 @@ import {
   CardDescription,
   CardContent,
   CardFooter,
-} from './ui/card'
+} from '../ui/card'
 
 interface DeclCardProps {
   title?: string

@@ -1,6 +1,6 @@
 import React, { type ReactNode } from 'react'
 import { type DeclElement } from './declCodeGenerator'
-import { getAllComponentDefinitions, loadComponent, getComponentDefinition } from './components'
+import { getAllComponentDefinitions, loadComponent, getComponentDefinition } from './declComponents'
 import { getAllActionDefinitions, loadAction } from './actions'
 
 // Load all components from the component map (like blobJsLoader does)
