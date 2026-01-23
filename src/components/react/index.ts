@@ -2,74 +2,8 @@
 // Each component is dynamically imported so Vite can create separate chunks
 // This keeps the main bundle small and loads components on-demand
 
-import { type RenderContext, renderDeclElements } from './declComponentUtils'
-
 // JSON Schema type for component parameters (flat Record of prop name to schema)
 export type JSONSchema = Record<string, any>
-
-// Type for processing props before rendering (e.g., converting array keys to rendered nodes)
-export type ProcessPropsCallback = (
-  props: Record<string, any>,
-  context: RenderContext
-) => Record<string, any>
-
-// Helper function to bind action props (onClick, onSubmit, etc.) to action handlers
-// Supports both object format: { name: "actionName", params: {...} } and string format (legacy)
-export function bindActionProps(
-  props: Record<string, any>,
-  context: RenderContext,
-  actionPropNames: string[]
-): Record<string, any> {
-  const processed = { ...props }
-  
-  for (const propName of actionPropNames) {
-    if (!processed[propName]) continue
-    
-    // Handle object format: { name: "actionName", params: {...} }
-    if (typeof processed[propName] === 'object' && processed[propName] !== null && !Array.isArray(processed[propName])) {
-      const actionConfig = processed[propName]
-      const actionName = actionConfig.name
-      
-      if (typeof actionName === 'string') {
-        const actionHandler = context.loadedActions.get(actionName)
-        if (actionHandler) {
-          // Get params from props[propName].params
-          const actionParams = processed[propName].params || {}
-          
-          // Bind action handler with params from config
-          processed[propName] = (...args: any[]) => {
-            // Use params from props[propName].params, merge with any args passed (e.g., form data)
-            const params = args.length > 0 && typeof args[0] === 'object' 
-              ? { ...actionParams, ...args[0] } 
-              : actionParams
-            return actionHandler(params)
-          }
-        } else {
-          console.warn(`Action "${actionName}" not found for ${propName}`)
-          delete processed[propName]
-        }
-      }
-    }
-    // Handle legacy string format for backward compatibility
-    else if (typeof processed[propName] === 'string') {
-      const actionName = processed[propName]
-      const actionHandler = context.loadedActions.get(actionName)
-      if (actionHandler) {
-        // Bind action handler with random/default params for legacy format
-        processed[propName] = (...args: any[]) => {
-          const randomParams = { value: Math.random().toString(36).substring(7) }
-          const params = args.length > 0 && typeof args[0] === 'object' ? { ...randomParams, ...args[0] } : randomParams
-          return actionHandler(params)
-        }
-      } else {
-        console.warn(`Action "${actionName}" not found for ${propName}`)
-        delete processed[propName]
-      }
-    }
-  }
-  
-  return processed
-}
 
 // Component definition with params (JSON schema) and load function
 export interface ComponentDefinition {
@@ -77,7 +11,6 @@ export interface ComponentDefinition {
   description: string
   params?: Record<string, JSONSchema>
   load?: () => Promise<any>
-  processProps?: ProcessPropsCallback
 }
 
 // Map component names to their component definitions
@@ -102,18 +35,7 @@ const componentImportMap: Record<string, ComponentDefinition> = {
       }
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
-    load: () => import('../components/react/ExistWhen'),
-    // Process props: convert children array from keys to rendered nodes
-    processProps: (props, context) => {
-      const processed = { ...props }
-      
-      if (Array.isArray(processed.children)) {
-        const childrenKeys = processed.children.filter((c): c is string => typeof c === 'string')
-        processed.children = renderDeclElements(childrenKeys, context)
-      }
-      
-      return processed
-    }
+    load: () => import('./ExistWhen')
   },
   Button: {
     name: 'Button',
@@ -152,11 +74,7 @@ const componentImportMap: Record<string, ComponentDefinition> = {
       }
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
-    load: () => import('../components/react/DeclButton'),
-    // Process props: bind onClick action
-    processProps: (props, context) => {
-      return bindActionProps(props, context, ['onClick'])
-    }
+    load: () => import('./DeclButton')
   },
   Card: {
     name: 'Card',
@@ -200,33 +118,7 @@ const componentImportMap: Record<string, ComponentDefinition> = {
       }
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
-    load: () => import('../components/react/DeclCard'),
-    // Process props: convert action, content, footer, and children arrays from keys to rendered nodes
-    processProps: (props, context) => {
-      const processed = { ...props }
-      
-      if (Array.isArray(processed.action)) {
-        const actionKeys = processed.action.filter((c): c is string => typeof c === 'string')
-        processed.action = renderDeclElements(actionKeys, context)
-      }
-      
-      if (Array.isArray(processed.content)) {
-        const contentKeys = processed.content.filter((c): c is string => typeof c === 'string')
-        processed.content = renderDeclElements(contentKeys, context)
-      }
-      
-      if (Array.isArray(processed.footer)) {
-        const footerKeys = processed.footer.filter((c): c is string => typeof c === 'string')
-        processed.footer = renderDeclElements(footerKeys, context)
-      }
-      
-      if (Array.isArray(processed.children)) {
-        const childrenKeys = processed.children.filter((c): c is string => typeof c === 'string')
-        processed.children = renderDeclElements(childrenKeys, context)
-      }
-      
-      return processed
-    }
+    load: () => import('./DeclCard')
   },
   Breadcrumb: {
     name: 'Breadcrumb',
@@ -238,7 +130,7 @@ const componentImportMap: Record<string, ComponentDefinition> = {
       }
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
-    load: () => import('../components/ui/breadcrumb')
+    load: () => import('../ui/breadcrumb')
   },
   Input: {
     name: 'Input',
@@ -256,7 +148,7 @@ const componentImportMap: Record<string, ComponentDefinition> = {
       }
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
-    load: () => import('../components/ui/input')
+    load: () => import('../ui/input')
   },
   Label: {
     name: 'Label',
@@ -268,7 +160,7 @@ const componentImportMap: Record<string, ComponentDefinition> = {
       }
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
-    load: () => import('../components/react/DeclLabel')
+    load: () => import('./DeclLabel')
   },
   Form: {
     name: 'Form',
@@ -298,21 +190,7 @@ const componentImportMap: Record<string, ComponentDefinition> = {
       }
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
-    load: () => import('../components/react/DeclForm'),
-    // Process props: convert children array from keys to rendered nodes and bind onSubmit action
-    processProps: (props, context) => {
-      let processed = { ...props }
-      
-      if (Array.isArray(processed.children)) {
-        const childrenKeys = processed.children.filter((c): c is string => typeof c === 'string')
-        processed.children = renderDeclElements(childrenKeys, context)
-      }
-      
-      // Bind onSubmit action
-      processed = bindActionProps(processed, context, ['onSubmit'])
-      
-      return processed
-    }
+    load: () => import('./DeclForm')
   },
 }
 

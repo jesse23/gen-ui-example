@@ -6,7 +6,7 @@
  */
 
 import { type ComponentType } from 'react'
-import { getAllComponentDefinitions, loadComponent } from './reactComponents'
+import { getAllComponentDefinitions, loadComponent } from '../components/react'
 
 /**
  * Load all components from the component map and return them as a deps object

@@ -56,7 +56,7 @@
  */
 
 import React, { type ReactNode, type ComponentType } from 'react'
-import { loadComponent, hasComponent } from './reactComponents'
+import { loadComponent, hasComponent } from '../components/react'
 import { loadComponentFromBlob } from './blobJsLoader'
 
 // ============================================================================

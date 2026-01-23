@@ -4,7 +4,7 @@
  * This service generates React component code from natural language prompts using OpenAI.
  */
 
-import { getAllComponentDefinitions } from './reactComponents'
+import { getAllComponentDefinitions } from '../components/react'
 import { callOpenAI } from './openai'
 
 // ============================================================================

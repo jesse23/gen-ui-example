@@ -1,7 +1,10 @@
 import React, { type ReactNode } from 'react'
 import { type DeclElement } from './declCodeGenerator'
-import { getAllComponentDefinitions, loadComponent, getComponentDefinition } from './declComponents'
+import { getAllComponentDefinitions, loadComponent, getComponentDefinition, type RenderContext } from '../components/decl'
 import { getAllActionDefinitions, loadAction } from './actions'
+
+// Re-export RenderContext for backward compatibility
+export type { RenderContext }
 
 // Load all components from the component map (like blobJsLoader does)
 export async function loadAllComponents(): Promise<Map<string, any>> {
@@ -35,13 +38,6 @@ export function loadAllActions(): Map<string, (...args: any[]) => any> {
   }
   
   return actionMap
-}
-
-// Render context containing all necessary data for rendering
-export interface RenderContext {
-  declElements: Map<string, DeclElement>
-  loadedComponents: Map<string, any>
-  loadedActions: Map<string, (...args: any[]) => any>
 }
 
 // Helper function to render an array of element keys into ReactNodes

@@ -5,7 +5,7 @@
  * The output follows the DECL format as described in GENUI_DECL_PROPOSAL.md
  */
 
-import { getAllComponentDefinitions } from './declComponents'
+import { getAllComponentDefinitions } from '../components/decl'
 import { getAllActionDefinitions } from './actions'
 import { callOpenAIStreaming, type UpdateCallback } from './openai'
 
