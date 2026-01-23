@@ -39,12 +39,8 @@ const componentImportMap: Record<string, ComponentDefinition> = {
   },
   Button: {
     name: 'Button',
-    description: 'A versatile button component with multiple variants and sizes for user interactions',
+    description: 'Shadcn UI Button component. Provide label via children (React children), not a text prop.',
     params: {
-      text: {
-        type: 'string',
-        description: 'The text content to display in the button'
-      },
       variant: {
         type: 'string',
         enum: ['default', 'destructive', 'outline', 'secondary', 'ghost', 'link'],
@@ -57,24 +53,21 @@ const componentImportMap: Record<string, ComponentDefinition> = {
         description: 'Size of the button',
         default: 'default'
       },
+      children: {
+        type: 'string',
+        description: 'Button label (passed as React children)'
+      },
       onClick: {
-        type: 'object',
-        description: 'Action to perform when button is clicked',
-        properties: {
-          name: {
-            type: 'string',
-            description: 'Name of the action to execute'
-          },
-          params: {
-            type: 'object',
-            description: 'Parameters to pass to the action'
-          }
-        },
-        required: ['name']
+        type: 'function',
+        description: 'Click handler'
+      },
+      className: {
+        type: 'string',
+        description: 'Additional Tailwind classes'
       }
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
-    load: () => import('./DeclButton')
+    load: () => import('../ui/button')
   },
   Card: {
     name: 'Card',

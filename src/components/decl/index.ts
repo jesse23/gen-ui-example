@@ -160,7 +160,7 @@ const componentImportMap: Record<string, ComponentDefinition> = {
       }
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
-    load: () => import('../react/DeclButton'),
+    load: () => import('./Button'),
     // Process props: bind onClick action
     processProps: (props, context) => {
       return bindActionProps(props, context, ['onClick'])
