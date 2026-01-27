@@ -29,9 +29,10 @@ const componentImportMap: Record<string, ComponentDefinition> = {
       children: {
         type: 'array',
         items: {
-          type: 'string'
+          type: 'object',
+          description: 'ReactNode - React elements/components to render as children when condition is true'
         },
-        description: 'Array of component IDs (keys) that should be rendered as children when condition is true'
+        description: 'Array of ReactNodes (React elements/components) that should be rendered as children when condition is true'
       }
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
@@ -84,30 +85,34 @@ const componentImportMap: Record<string, ComponentDefinition> = {
       action: {
         type: 'array',
         items: {
-          type: 'string'
+          type: 'object',
+          description: 'ReactNode - React elements/components to render as action elements in the card header'
         },
-        description: 'Array of component IDs (keys) that should be rendered as action elements in the card header'
+        description: 'Array of ReactNodes (React elements/components) that should be rendered as action elements in the card header'
       },
       content: {
         type: 'array',
         items: {
-          type: 'string'
+          type: 'object',
+          description: 'ReactNode - React elements/components to render as content inside the card body'
         },
-        description: 'Array of component IDs (keys) that should be rendered as content inside the card body'
+        description: 'Array of ReactNodes (React elements/components) that should be rendered as content inside the card body'
       },
       footer: {
         type: 'array',
         items: {
-          type: 'string'
+          type: 'object',
+          description: 'ReactNode - React elements/components to render as footer elements at the bottom of the card'
         },
-        description: 'Array of component IDs (keys) that should be rendered as footer elements at the bottom of the card'
+        description: 'Array of ReactNodes (React elements/components) that should be rendered as footer elements at the bottom of the card'
       },
       children: {
         type: 'array',
         items: {
-          type: 'string'
+          type: 'object',
+          description: 'ReactNode - React elements/components to render as children inside the card (alternative to content)'
         },
-        description: 'Array of component IDs (keys) that should be rendered as children inside the card (alternative to content)'
+        description: 'Array of ReactNodes (React elements/components) that should be rendered as children inside the card (alternative to content)'
       }
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
@@ -145,15 +150,23 @@ const componentImportMap: Record<string, ComponentDefinition> = {
   },
   Label: {
     name: 'Label',
-    description: 'A label component for form inputs, providing accessible labeling for form fields',
+    description: 'Shadcn UI Label component. Provide label text via children (React children), not a text prop.',
     params: {
-      text: {
+      htmlFor: {
         type: 'string',
-        description: 'The text content to display in the label'
+        description: 'The id of the form element this label is associated with'
+      },
+      children: {
+        type: 'string',
+        description: 'Label text (passed as React children)'
+      },
+      className: {
+        type: 'string',
+        description: 'Additional Tailwind classes'
       }
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
-    load: () => import('./DeclLabel')
+    load: () => import('../ui/label')
   },
   Form: {
     name: 'Form',
@@ -177,9 +190,10 @@ const componentImportMap: Record<string, ComponentDefinition> = {
       children: {
         type: 'array',
         items: {
-          type: 'string'
+          type: 'object',
+          description: 'ReactNode - React elements/components to render as children inside the form, each wrapped in a Field component'
         },
-        description: 'Array of component IDs (keys) that should be rendered as children inside the form, each wrapped in a Field component'
+        description: 'Array of ReactNodes (React elements/components) that should be rendered as children inside the form, each wrapped in a Field component'
       }
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite

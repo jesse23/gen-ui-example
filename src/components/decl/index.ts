@@ -276,7 +276,7 @@ const componentImportMap: Record<string, ComponentDefinition> = {
       }
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
-    load: () => import('../react/DeclLabel')
+    load: () => import('./Label')
   },
   Form: {
     name: 'Form',
