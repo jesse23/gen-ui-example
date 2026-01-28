@@ -3,95 +3,154 @@ import Editor from '@monaco-editor/react'
 import DeclGenComponent from '../components/react/DeclGenComponent'
 import { getPageMetadata } from './pages'
 import { Button } from '../components/ui/button'
-import { generate, type DeclStructure } from '../services/declCodeGenerator'
+import { generate, type DeclStreamResponse, type DeclAggregatedResponse, type DeclStructure } from '../services/declCodeGenerator'
 
 export const pageMetadata = getPageMetadata('/decl-gen')!
 
 const DEFAULT_PROMPT = "A form to create a LinkdIn Profile, with all the required and optional fields"
 
-// Try to parse JSON incrementally, return null if invalid
-// Smart parsing: finds last complete element in array and parses up to that point
-function tryParseJSON(text: string): DeclStructure | null {
+// Try to parse JSON incrementally. Returns array of chunks so far, or null if nothing valid.
+// Supports: (1) array of chunks [{ "view": [...] }, { "data": {} }], (2) single object { "view": [...], "data": {} }.
+function tryParseJSON(text: string): DeclStreamResponse | null {
   if (!text.trim()) return null
-  
-  // Extract JSON from markdown code blocks if present
+
   let jsonText = text
   const jsonBlockRegex = /```(?:json)?\s*\n([\s\S]*?)(?:```|$)/
   const match = text.match(jsonBlockRegex)
   if (match && match[1]) {
     jsonText = match[1].trim()
   }
-  
-  // Find the start of the array
+
+  // --- Array format: [ { "view": [...] }, { "data": {} }, ... ] ---
   const arrayStart = jsonText.indexOf('[')
-  if (arrayStart === -1) return null
-  
-  // Get everything from the opening bracket
-  let arrayContent = jsonText.substring(arrayStart + 1)
-  
-  // Find the last complete object in the array
-  // We'll count braces to find where a complete object ends
-  let braceCount = 0
-  let inString = false
-  let escapeNext = false
-  let lastCompleteIndex = -1
-  
-  for (let i = 0; i < arrayContent.length; i++) {
-    const char = arrayContent[i]
-    
-    if (escapeNext) {
-      escapeNext = false
-      continue
-    }
-    
-    if (char === '\\') {
-      escapeNext = true
-      continue
-    }
-    
-    if (char === '"' && !escapeNext) {
-      inString = !inString
-      continue
-    }
-    
-    if (inString) continue
-    
-    if (char === '{') {
-      braceCount++
-    } else if (char === '}') {
-      braceCount--
-      // When braces are balanced and we hit a comma or end, we have a complete object
-      if (braceCount === 0) {
-        // Check if this is followed by comma or end of array
-        const nextNonWhitespace = arrayContent.substring(i + 1).match(/^\s*([,}\]]|$)/)
-        if (nextNonWhitespace) {
-          lastCompleteIndex = i + 1
+  if (arrayStart !== -1) {
+    const arrayContent = jsonText.substring(arrayStart + 1)
+    let braceCount = 0
+    let inString = false
+    let escapeNext = false
+    let lastCompleteEnd = -1
+
+    for (let i = 0; i < arrayContent.length; i++) {
+      const char = arrayContent[i]
+      if (escapeNext) {
+        escapeNext = false
+        continue
+      }
+      if (char === '\\') {
+        escapeNext = true
+        continue
+      }
+      if (char === '"') {
+        inString = !inString
+        continue
+      }
+      if (inString) continue
+      if (char === '{') {
+        braceCount++
+      } else if (char === '}') {
+        braceCount--
+        if (braceCount === 0) {
+          lastCompleteEnd = i + 1
         }
       }
     }
-  }
-  
-  // If we found a complete element, try to parse up to that point
-  if (lastCompleteIndex > 0) {
-    const completeArray = '[' + arrayContent.substring(0, lastCompleteIndex).trim() + ']'
-    try {
-      return JSON.parse(completeArray)
-    } catch (e) {
-      // If parsing fails, continue to try full parse
+
+    if (lastCompleteEnd > 0) {
+      const raw = arrayContent.substring(0, lastCompleteEnd).trim().replace(/,\s*$/, '')
+      try {
+        const parsed = JSON.parse('[' + raw + ']') as DeclStreamResponse
+        if (Array.isArray(parsed)) {
+          return expandViewChunks(parsed)
+        }
+      } catch (_) {
+        // fall through
+      }
+    }
+
+    // Whole array might be complete (ends with ])
+    const trimmed = jsonText.substring(arrayStart).trim()
+    if (trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed) as DeclStreamResponse
+        if (Array.isArray(parsed)) {
+          return expandViewChunks(parsed)
+        }
+      } catch (_) {
+        // fall through
+      }
     }
   }
-  
-  // Try to parse the whole thing (might be complete now)
-  try {
-    const fullArray = '[' + arrayContent.trim()
-    // If it doesn't end with ], try adding it
-    const trimmed = fullArray.trim()
-    const toParse = trimmed.endsWith(']') ? trimmed : trimmed + ']'
-    return JSON.parse(toParse)
-  } catch (e) {
-    // JSON is incomplete or invalid, return null
-    return null
+
+  // --- Object format: { "view": [...], "data": {} } ---
+  const objectStart = jsonText.indexOf('{')
+  if (objectStart !== -1) {
+    let depth = 0
+    let inString = false
+    let escapeNext = false
+    let endIndex = -1
+    for (let i = objectStart; i < jsonText.length; i++) {
+      const char = jsonText[i]
+      if (escapeNext) {
+        escapeNext = false
+        continue
+      }
+      if (char === '\\') {
+        escapeNext = true
+        continue
+      }
+      if (char === '"') {
+        inString = !inString
+        continue
+      }
+      if (inString) continue
+      if (char === '{') depth++
+      else if (char === '}') {
+        depth--
+        if (depth === 0) {
+          endIndex = i + 1
+          break
+        }
+      }
+    }
+    if (endIndex > 0) {
+      try {
+        const parsed = JSON.parse(jsonText.substring(0, endIndex).trim()) as { view?: unknown[]; data?: Record<string, unknown> }
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const chunks: DeclStreamResponse = []
+          if (Array.isArray(parsed.view)) {
+            chunks.push({ view: parsed.view as DeclStructure })
+          }
+          if (parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data)) {
+            chunks.push({ data: parsed.data })
+          }
+          return chunks.length > 0 ? expandViewChunks(chunks) : null
+        }
+      } catch (_) {
+        // fall through
+      }
+    }
   }
+
+  return null
+}
+
+// Expand one chunk with view: [a,b,c] into [ { view: [a] }, { view: [b] }, { view: [c] } ] so
+// DeclGenComponent appends each and we get correct aggregation even when AI sends one big view chunk.
+function expandViewChunks(chunks: DeclStreamResponse): DeclStreamResponse {
+  const out: DeclStreamResponse = []
+  for (const ch of chunks) {
+    if (!ch || typeof ch !== 'object') continue
+    if ('view' in ch && Array.isArray(ch.view)) {
+      for (const el of ch.view) {
+        out.push({ view: [el] })
+      }
+      continue
+    }
+    if ('data' in ch && ch.data && typeof ch.data === 'object' && !Array.isArray(ch.data)) {
+      out.push({ data: ch.data })
+    }
+  }
+  return out
 }
 
 export default function DeclGenExample() {
@@ -99,7 +158,7 @@ export default function DeclGenExample() {
   const [generationKey, setGenerationKey] = useState<number>(0)
   const [inputValue, setInputValue] = useState(DEFAULT_PROMPT)
   const [jsonText, setJsonText] = useState<string>('')
-  const [declStructure, setDeclStructure] = useState<DeclStructure | null | undefined>([])
+  const [declStructure, setDeclStructure] = useState<DeclStreamResponse | DeclAggregatedResponse | null | undefined>([])
   const [error, setError] = useState<string | null>(null)
   const effectRunRef = useRef<number>(0)
   const activeRunRef = useRef<number | null>(null)
@@ -137,32 +196,21 @@ export default function DeclGenExample() {
           }
           
           // Try to parse incrementally and update structure
-          console.log('streamedText', streamedText)
           const parsed = tryParseJSON(streamedText)
           if (parsed) {
-            console.log('parsed', parsed)
             setDeclStructure(parsed)
           }
           setJsonText(streamedText)
         }
       })
         .then((result) => {
-          // Ignore if this is not the active run anymore
-          if (activeRunRef.current !== currentRun) {
-            console.log('Ignoring result from cancelled run:', currentRun)
-            return
-          }
-          
-          console.log('Setting final result for run:', currentRun)
+          if (activeRunRef.current !== currentRun) return
+          // Final result is aggregated { view, data }; component will replace streamed array with it
           setDeclStructure(result)
           setJsonText(JSON.stringify(result, null, 2))
         })
         .catch((err) => {
-          // Ignore errors if this is not the active run anymore
-          if (activeRunRef.current !== currentRun) {
-            console.log('Ignoring error from cancelled run:', currentRun)
-            return
-          }
+          if (activeRunRef.current !== currentRun) return
           
           console.error('Error generating DECL structure:', err)
           setError(err.message || 'Failed to generate DECL structure')

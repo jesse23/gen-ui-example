@@ -6,6 +6,19 @@ import { toast } from 'sonner'
 // JSON Schema type for action parameters (flat Record of param name to schema)
 export type JSONSchema = Record<string, any>
 
+// Property shape used by Field / form data (Record<string, Property>)
+export interface Property {
+  type?: string
+  name?: string
+  value?: unknown
+  placeholder?: string
+  readOnly?: boolean
+  valid?: boolean
+  disabled?: boolean
+  description?: string
+  options?: { value: string; label: string }[]
+}
+
 // Action definition with params (JSON schema) and handler function
 export interface ActionDefinition {
   name: string
@@ -21,21 +34,27 @@ const actionMap: Record<string, ActionDefinition> = {
     name: 'submit',
     description: 'Submit form data or trigger a submission action',
     params: {
-      text: {
-        type: 'string',
-        description: 'The text or data to submit'
+      data: {
+        type: 'object',
+        description: 'Form data as Record<string, Property> (field name -> { type, name, value, placeholder? })'
       }
     },
-    handler: async (params: { text?: string }): Promise<void> => {
-      const submitText = params?.text || 'Form submitted'
-      console.log('Submitting:', submitText)
-
-      // Show toast notification
+    handler: async (params: Record<string, Property> | { data?: Record<string, Property> }): Promise<void> => {
+      const payload = params && typeof params === 'object' && 'data' in params && params.data != null
+        ? params.data
+        : (params as Record<string, Property>)
+      const filteredPayload = Object.fromEntries(
+        Object.entries(payload)
+          .filter(([, v]) => {
+            if (v == null) return false
+            const val = v.value
+            return val != null && val !== ''
+          })
+          .map(([k, v]) => [k, { value: v.value }])
+      )
       toast.success('Form submitted successfully!', {
-        description: submitText,
+        description: JSON.stringify(filteredPayload, null, 2),
       })
-
-      // TODO: Implement actual submission logic
     }
   },
   navigate: {
@@ -87,11 +106,30 @@ const actionMap: Record<string, ActionDefinition> = {
       },
       required: ['position', 'weight']
     },
-    handler: async (params: {}): Promise<{ position: { x: number; y: number }; weight: number }> => {
+    handler: async (_params: {}): Promise<{ position: { x: number; y: number }; weight: number }> => {
       return {
         position: { x: 3, y: 5 },
         weight: 7
       }
+    }
+  },
+  plusOne: {
+    name: 'plusOne',
+    description: 'Increment a numeric value by 1',
+    params: {
+      value: {
+        type: 'number',
+        description: 'Input number'
+      }
+    },
+    returns: {
+        value: {
+          type: 'number',
+          description: 'Output number (input + 1)'
+        }
+    },
+    handler: async (params: { value: number }): Promise<{ value: number }> => {
+      return { value: params.value + 1 }
     }
   },
 }

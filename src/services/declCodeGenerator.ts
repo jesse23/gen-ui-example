@@ -74,11 +74,57 @@ export interface DeclElement {
 export type DeclStructure = DeclElement[]
 
 /**
+ * Streaming response chunk.
+ * While streaming, the model outputs an array of these chunks.
+ * Each chunk must have exactly one key: "view" or "data".
+ */
+export type DeclStreamChunk =
+  | { view: DeclStructure }
+  | { data: Record<string, any> }
+
+/**
+ * The model's streaming-friendly output format: an array of chunks.
+ */
+export type DeclStreamResponse = DeclStreamChunk[]
+
+/**
+ * Final aggregated response after applying all streamed chunks.
+ */
+export interface DeclAggregatedResponse {
+  view: DeclStructure
+  data: Record<string, any>
+}
+
+function aggregateDeclStream(chunks: DeclStreamResponse): DeclAggregatedResponse {
+  const aggregated: DeclAggregatedResponse = { view: [], data: {} }
+
+  for (const chunk of chunks) {
+    if (chunk && typeof chunk === 'object' && 'view' in chunk) {
+      const viewPatch = (chunk as any).view
+      if (Array.isArray(viewPatch)) {
+        aggregated.view.push(...viewPatch)
+      }
+      continue
+    }
+
+    if (chunk && typeof chunk === 'object' && 'data' in chunk) {
+      const dataPatch = (chunk as any).data
+      if (dataPatch && typeof dataPatch === 'object' && !Array.isArray(dataPatch)) {
+        // For now: shallow "set" semantics (last write wins)
+        Object.assign(aggregated.data, dataPatch)
+      }
+    }
+  }
+
+  return aggregated
+}
+
+/**
  * Generate flattened JSON structure from a natural language prompt
  * 
  * @param userPrompt - Natural language description of the UI to generate
  * @param context - Context object with onUpdate callback for streaming updates
- * @returns Promise that resolves to the generated DECL structure
+ * @returns Promise that resolves to the aggregated { view, data } response
  * 
  * @example
  * ```ts
@@ -93,7 +139,7 @@ export type DeclStructure = DeclElement[]
 export async function generate(
   userPrompt: string,
   context?: { onUpdate?: UpdateCallback }
-): Promise<DeclStructure> {
+): Promise<DeclAggregatedResponse> {
   // Build system prompt with component and action context
   const componentDefs = getAllComponentDefinitions(true)
   const actionDefs = getAllActionDefinitions(true)
@@ -110,98 +156,43 @@ ${JSON.stringify(componentDefs, null, 2)}`
 
 ${JSON.stringify(actionDefs, null, 2)}`
 
-  const systemPrompt = `You are a UI generation assistant. Generate a flattened JSON structure that represents a UI component tree.
+  const systemPrompt = `You are a UI generation assistant. Given a user request, choose components and actions, compose a flattened tree (view + data), and match each component's JSON Schema.
 
-Given a user's request, reason about which components and actions to use, compose them into a flattened tree structure, and provide the correct inputs according to each tool's JSON Schema.
+OUTPUT FORMAT (streaming-friendly):
+- Output a JSON array of delta chunks. Each chunk is an object with exactly one key: "view" OR "data".
+- The client streams your response and parses chunks as they arrive. It aggregates by: appending each "view" array to the running view list, and shallow-merging each "data" object into the data store.
+- Emit multiple chunks so the UI can render incrementally (e.g. one or more view chunks, then data if needed). Do not output a single object with both "view" and "data"; use separate chunks.
 
-OUTPUT FORMAT:
-You must generate a JSON array with this exact structure:
+Example (client will append view chunks and merge data chunks):
 \`\`\`json
 [
-  {
-    "key": "rootKey",
-    "type": "ComponentName",
-    "props": {
-      "propName": "propValue",
-      "propNameFromStore": "{variableName}",
-      "text": "{fullVariableName}",
-      "propAction": {
-        "name": "actionNameInLoadedActions",
-        "params": {
-          "paramName": "paramValue",
-          "paramFromStore": "{variableName}"
-        },
-        "returns": {
-          "attr": "path"
-        }
-      }
-    },
-    "children": ["childKey1", "childKey2"]
-  },
-  {
-    "key": "childKey1",
-    "type": "ComponentName",
-    "props": {
-      "propName": "propValue"
-    }
-  },
-  {
-    "key": "childKey2",
-    "type": "ComponentName",
-    "props": {
-      "propName": "propValue"
-    }
-  }
+  { "data": { "title": "My Page" } },
+  { "view": [ { "key": "root", "type": "ComponentName", "props": { "text": "{title}" }, "children": ["child1"] } ] },
+  { "view": [ { "key": "child1", "type": "Other", "props": {} } ] }
 ]
 \`\`\`
 
-DATA STORE:
-- A data store is available starting from an empty object {}
-- To fetch a value from the store, use the syntax: "{variableName}" (e.g., "{userName}", "{positionX}")
-- CRITICAL RULE: Store variables MUST be the ENTIRE string value. NEVER embed {variable} inside other text.
-- CORRECT examples:
-  * "text": "{userName}"
-  * "text": "{positionX}"
-  * "label": "{fullPositionText}"
-- WRONG examples (DO NOT DO THIS):
-  * "text": "Position: {position}" ❌
-  * "text": "User: {userName}" ❌
-  * "text": "X: {position.x}, Y: {position.y}" ❌
-- If you need formatted text with variables, store the complete formatted string in the data store first, then reference it as "{formattedText}"
-- The store variable will be resolved to dataStore[variableName] at runtime
-- You can use {variableName} in any prop value or action param value, but it must be the complete value
+DATA STORE AND VARIABLES:
+- Store starts empty. Use "{path}" to read a value (e.g. "{userName}", "{position.x}"). The prop value must be exactly that string—do not embed {path} inside other text; for composed text, put the full string in the store and reference it.
+- Props and action params can use "{path}".
+
+DATA BINDING (dataBind):
+- Use "dataBind": "path" (dot-separated) for inputs so value and onChange are wired automatically.
+- TextBox: path can be a scalar (e.g. user.name: "") or a Property object.
+- Field: path must be a Property object: { type: "text"|"number"|..., name: "Label", value: ""|0, placeholder?: "hint" }. name is the label; value is the current value.
+  Example for Field: "dataBind": "profile.firstName" with data "profile": { "firstName": { "type": "text", "name": "First Name", "value": "", "placeholder": "First Name" } }.
 
 ACTION RETURNS:
-- If an action definition has a "returns" field (JSON Schema), it means the action returns data
-- To store the return value in the data store, add a "returns" field to the action config with the format: { "attr": "path" }
-- "attr" is the attribute name from the action's return value
-- "path" is the dot-separated path where to store it in the data store (e.g., "position.x", "user.name", "data")
-- Example: If action returns { position: { x: 3, y: 5 }, weight: 7 } and you want to store position.x at "posX" and weight at "weight", use:
-  {
-    "name": "actionName",
-    "params": {},
-    "returns": {
-      "position": "position",
-      "weight": "weight"
-    }
-  }
-- Or to store nested values: { "position": "position", "weight": "weight" } will store the entire position object and weight value
+- If an action has "returns" in its definition, add "returns": { "attr": "storePath" } to the action config to write return values into the store.
 
-REQUIREMENTS:
-1. Structure: Use a JSON array where each element is an object with key, type, props, and optional children
-2. Root: The first element in the array is the root element
-3. Keys: Each element must have a unique "key" that is used to reference it in children arrays
-4. Type: The "type" must match a component name from the available components (case-sensitive)
-5. Props: Component properties must match the JSON Schema defined in the component's params. Only include props that are defined in the component's params.
-6. Children: Use an array of child element keys (strings) to reference children, not nested objects
-7. Component preference: Always prefer using components from the component map over DOM elements
-8. Actions: For action field try to put proper action name and also give param properly.
-9. Store variables - CRITICAL RULE: When using store variables with {variableName} syntax, the variable MUST be the ENTIRE prop value. NEVER embed {variable} inside strings with other text. Examples:
-   - CORRECT: "text": "{positionText}" or "text": "{userName}"
-   - WRONG: "text": "Position: {position}" or "text": "User: {userName}" or "text": "X: {x}, Y: {y}"
-   - If you need formatted text, store the complete formatted string in the data store first, then reference it
-10. Action returns: If an action has a "returns" field in its definition, include a "returns" mapping in the action config to store return values
-11. className: Only include className prop if the component's params include 'className', or for DOM elements
+RULES:
+1. Output: JSON array of delta chunks. Each chunk has exactly one key: "view" or "data". Client appends view arrays and merges data objects in order.
+2. Emit multiple chunks (e.g. several view chunks) so the client can render incrementally; do not output one big object with both view and data.
+3. View: array of DECL elements with unique "key", "type" (from available components), "props", optional "children" (array of keys).
+4. Props must match each component's params schema; only include params that exist.
+5. Prefer components from the list over raw DOM.
+6. Actions: use correct action name and params. Add "returns" when the action definition has returns.
+7. Include className only if the component's params define it.
 
 ${componentContext}
 
@@ -212,24 +203,12 @@ Generate only valid JSON, no explanations or markdown outside code blocks.`
   // Call OpenAI API with streaming
   const response = await callOpenAIStreaming(userPrompt, systemPrompt, context?.onUpdate)
   
-  // Extract and parse JSON from response
-  const declStructure = extractJSON(response)
-  
-  // Validate basic structure
-  if (!Array.isArray(declStructure)) {
-    throw new Error('Invalid DECL structure: expected a JSON array')
+  // Extract and parse JSON from response (expected: array of chunks)
+  const chunks = extractJSON(response) as DeclStreamResponse
+
+  if (!Array.isArray(chunks)) {
+    throw new Error('Invalid response: expected a JSON array of chunks')
   }
-  
-  if (declStructure.length === 0) {
-    throw new Error('Invalid DECL structure: array must contain at least one element (the root)')
-  }
-  
-  // Validate each element has required fields
-  for (const element of declStructure) {
-    if (!element.key || !element.type) {
-      throw new Error('Invalid DECL structure: each element must have "key" and "type" fields')
-    }
-  }
-  
-  return declStructure
+
+  return aggregateDeclStream(chunks)
 }

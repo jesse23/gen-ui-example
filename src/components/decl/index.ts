@@ -30,8 +30,9 @@ export function resolveStoreVariables(
   dataStore: Record<string, any>
 ): any {
   if (typeof value === 'string' && value.startsWith('{') && value.endsWith('}')) {
-    const variableName = value.slice(1, -1).trim()
-    return dataStore[variableName]
+    const path = value.slice(1, -1).trim()
+    // Support nested paths (e.g. "form.myField.value") via getNestedValue
+    return path.includes('.') ? getNestedValue(dataStore, path) : dataStore[path]
   }
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
     const resolved: Record<string, any> = {}
@@ -46,6 +47,19 @@ export function resolveStoreVariables(
   return value
 }
 
+// Helper function to get nested value from object by path (e.g., "position.x" -> obj.position.x)
+function getNestedValue(obj: Record<string, any>, path: string): any {
+  const parts = path.split('.')
+  let current = obj
+  for (const part of parts) {
+    if (current === null || current === undefined || typeof current !== 'object') {
+      return undefined
+    }
+    current = current[part]
+  }
+  return current
+}
+
 // Helper function to set nested value in object by path (e.g., "position.x" -> obj.position.x)
 function setNestedValue(obj: Record<string, any>, path: string, value: any): void {
   const parts = path.split('.')
@@ -58,6 +72,32 @@ function setNestedValue(obj: Record<string, any>, path: string, value: any): voi
     current = current[part]
   }
   current[parts[parts.length - 1]] = value
+}
+
+/**
+ * Create a data binding for a store path.
+ * Returns a getter and setter function for two-way binding.
+ * 
+ * @param path - Dot-separated path in the data store (e.g., "user.name", "form.email")
+ * @param context - Render context with dataStore and setDataStore
+ * @returns Object with `get` (getter) and `set` (setter) functions
+ */
+export function createDataBind(
+  path: string,
+  context: RenderContext
+): { get: () => any; set: (value: any) => void } {
+  return {
+    get: () => {
+      return getNestedValue(context.dataStore, path)
+    },
+    set: (newValue: any) => {
+      context.setDataStore((prev) => {
+        const updated = { ...prev }
+        setNestedValue(updated, path, newValue)
+        return updated
+      })
+    }
+  }
 }
 
 // Helper function to bind action props (onClick, onSubmit, etc.) to action handlers
@@ -89,11 +129,14 @@ export function bindActionProps(
           
           // Bind action handler with params from config
           processed[propName] = async (...args: any[]) => {
-            // Use params from props[propName].params, merge with any args passed (e.g., form data)
-            const params = args.length > 0 && typeof args[0] === 'object' 
-              ? { ...actionParams, ...args[0] } 
+            // Merge with args[0] only when it's plain data (e.g. form data), not a React/DOM event
+            const firstArg = args.length > 0 ? args[0] : undefined
+            const isEvent = firstArg != null && typeof firstArg === 'object' &&
+              ('nativeEvent' in firstArg || (typeof (firstArg as any).preventDefault === 'function' && 'target' in firstArg))
+            const params = !isEvent && firstArg != null && typeof firstArg === 'object'
+              ? { ...actionParams, ...firstArg }
               : actionParams
-            
+
             const result = await actionHandler(params)
             
             // If returns mapping is specified and action has a return value, store it
@@ -126,10 +169,15 @@ export function bindActionProps(
       const actionName = processed[propName]
       const actionHandler = context.loadedActions.get(actionName)
       if (actionHandler) {
-        // Bind action handler with random/default params for legacy format
+        // Bind action handler with random/default params for legacy format (don't merge event)
         processed[propName] = (...args: any[]) => {
           const randomParams = { value: Math.random().toString(36).substring(7) }
-          const params = args.length > 0 && typeof args[0] === 'object' ? { ...randomParams, ...args[0] } : randomParams
+          const firstArg = args.length > 0 ? args[0] : undefined
+          const isEvent = firstArg != null && typeof firstArg === 'object' &&
+            ('nativeEvent' in firstArg || (typeof (firstArg as any).preventDefault === 'function' && 'target' in firstArg))
+          const params = !isEvent && firstArg != null && typeof firstArg === 'object'
+            ? { ...randomParams, ...firstArg }
+            : randomParams
           return actionHandler(params)
         }
       } else {
@@ -341,47 +389,124 @@ const componentImportMap: Record<string, ComponentDefinition> = {
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
     load: () => import('./Label')
   },
+  TextBox: {
+    name: 'TextBox',
+    description: 'A text input field component with two-way data binding support via dataBind prop',
+    params: {
+      dataBind: {
+        type: 'string',
+        description: 'Dot-separated path in the data store to bind this input to (e.g., "user.name", "form.email"). This automatically provides value and onChange for two-way binding.'
+      },
+      placeholder: {
+        type: 'string',
+        description: 'Placeholder text displayed when the input is empty'
+      },
+      type: {
+        type: 'string',
+        enum: ['text', 'email', 'password', 'number', 'tel', 'url', 'search', 'date', 'time', 'datetime-local'],
+        description: 'Input type',
+        default: 'text'
+      },
+      className: {
+        type: 'string',
+        description: 'Additional CSS classes to apply to the input'
+      }
+    },
+    // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
+    load: () => import('./TextBox'),
+    // Process props: handle dataBind prop and convert to value/onChange
+    processProps: (props, context) => {
+      const processed = { ...props }
+      
+      // Handle dataBind prop - convert to value and onChange
+      if (processed.dataBind && typeof processed.dataBind === 'string') {
+        const path = processed.dataBind as string
+        const binding = createDataBind(path, context)
+        const bound = binding.get()
+        // If the store holds a Property object (e.g. { type, name, value, placeholder }), bind to .value so the input shows the scalar, not "[object Object]"
+        const valuePath =
+          bound != null &&
+          typeof bound === 'object' &&
+          !Array.isArray(bound) &&
+          'value' in bound
+            ? `${path}.value`
+            : path
+        const valueBinding =
+          valuePath !== path ? createDataBind(valuePath, context) : binding
+        processed.value = valueBinding.get()
+        // When bound to a Property object: use property.name for label, property.placeholder for placeholder (not name in placeholder)
+        if (valuePath !== path && bound != null && typeof bound === 'object' && 'name' in bound) {
+          processed.label = (bound as { name?: string }).name
+          if ((bound as { placeholder?: string }).placeholder != null) {
+            processed.placeholder = (bound as { placeholder?: string }).placeholder
+          }
+        }
+        // Wrap setter to extract value from event if it's a React event object
+        processed.onChange = (e: any) => {
+          const value = e?.target?.value !== undefined ? e.target.value : e
+          valueBinding.set(value)
+        }
+        // Remove dataBind prop as it's DECL-specific and not needed by component
+        delete processed.dataBind
+      }
+      
+      return processed
+    }
+  },
+  Field: {
+    name: 'Field',
+    description: 'A form field driven by a Property in the store. dataBind is the dot-separated path to that Property object (e.g. "form.fields.email"). The store at that path must hold { type, name, value, readOnly?, valid?, disabled?, placeholder?, description?, options? }. Value updates write back to property.value at the same path.',
+    params: {
+      dataBind: {
+        type: 'string',
+        description: 'Dot-separated path in the data store to a Property object (e.g. "form.fields.email"). The object must have type, name, and value; optional: readOnly, valid, disabled, placeholder, description, options.'
+      },
+      id: { type: 'string', description: 'Optional id for the control (defaults to generated from property.name)' },
+      className: { type: 'string', description: 'Additional CSS classes for the field wrapper' }
+    },
+    // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
+    load: () => import('./Field'),
+    processProps: (props, context) => {
+      const processed = { ...props }
+      const dataBind = processed.dataBind as string | undefined
+      if (dataBind && typeof dataBind === 'string') {
+        const property = getNestedValue(context.dataStore, dataBind)
+        processed.property =
+          property != null && typeof property === 'object'
+            ? { ...property }
+            : { type: 'text', name: '', value: undefined }
+        processed.onChange = (value: unknown) => {
+          context.setDataStore((prev) => {
+            const updated = { ...prev }
+            setNestedValue(updated, `${dataBind}.value`, value)
+            return updated
+          })
+        }
+        delete processed.dataBind
+      }
+      return processed
+    }
+  },
   Form: {
     name: 'Form',
-    description: 'A form component that wraps form elements with onSubmit handling and automatically wraps children with Field components',
+    description: 'A form component that wraps form elements and renders children (use a Button with onClick for submit action)',
     params: {
-      onSubmit: {
-        type: 'object',
-        description: 'Action to perform when form is submitted',
-        properties: {
-          name: {
-            type: 'string',
-            description: 'Name of the action to execute'
-          },
-          params: {
-            type: 'object',
-            description: 'Parameters to pass to the action (will be merged with form data)'
-          }
-        },
-        required: ['name']
-      },
       children: {
         type: 'array',
         items: {
           type: 'string'
         },
-        description: 'Array of component IDs (keys) that should be rendered as children inside the form, each wrapped in a Field component'
+        description: 'Array of component IDs (keys) that should be rendered as children inside the form'
       }
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
     load: () => import('../react/DeclForm'),
-    // Process props: convert children array from keys to rendered nodes and bind onSubmit action
     processProps: (props, context) => {
       let processed = { ...props }
-      
       if (Array.isArray(processed.children)) {
         const childrenKeys = processed.children.filter((c): c is string => typeof c === 'string')
         processed.children = renderDeclElements(childrenKeys, context)
       }
-      
-      // Bind onSubmit action
-      processed = bindActionProps(processed, context, ['onSubmit'])
-      
       return processed
     }
   },
@@ -442,7 +567,6 @@ export async function loadComponent(name: string): Promise<any> {
       throw new Error(`Component "${name}" does not have a load function`)
     }
     try {
-      console.log(`Loading component: ${name}`)
       const module = await componentDef.load()
       // Try default export first, then named export with same name, then the module itself
       let component = module.default
@@ -455,7 +579,6 @@ export async function loadComponent(name: string): Promise<any> {
       if (!component) {
         component = module
       }
-      console.log(`Successfully loaded component: ${name}`, component ? 'found' : 'not found')
       return component
     } catch (error) {
       console.error(`Error importing component "${name}":`, error)
