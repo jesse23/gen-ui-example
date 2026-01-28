@@ -48,6 +48,11 @@ const actionMap: Record<string, ActionDefinition> = {
     },
     handler: (params: { url: string }): void => {
       console.log('Navigating to:', params.url)
+
+      // Show toast notification
+      toast.success('Navigating to:', {
+        description: params.url,
+      })
       // TODO: Implement actual navigation logic
       // For now, this could use window.location or a router
     }
