@@ -4,6 +4,7 @@
 
 import { type DeclElement } from '../../services/declCodeGenerator'
 import { renderDeclElements } from '../../services/declComponentUtils'
+import { getActionDefinition } from '../../services/actions'
 
 // JSON Schema type for component parameters (flat Record of prop name to schema)
 export type JSONSchema = Record<string, any>
@@ -13,6 +14,8 @@ export interface RenderContext {
   declElements: Map<string, DeclElement>
   loadedComponents: Map<string, any>
   loadedActions: Map<string, (...args: any[]) => any>
+  dataStore: Record<string, any>
+  setDataStore: (updater: (prev: Record<string, any>) => Record<string, any>) => void
 }
 
 // Type for processing props before rendering (e.g., converting array keys to rendered nodes)
@@ -21,8 +24,44 @@ export type ProcessPropsCallback = (
   context: RenderContext
 ) => Record<string, any>
 
+// Helper function to resolve {variable} syntax to fetch from data store
+export function resolveStoreVariables(
+  value: any,
+  dataStore: Record<string, any>
+): any {
+  if (typeof value === 'string' && value.startsWith('{') && value.endsWith('}')) {
+    const variableName = value.slice(1, -1).trim()
+    return dataStore[variableName]
+  }
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    const resolved: Record<string, any> = {}
+    for (const [key, val] of Object.entries(value)) {
+      resolved[key] = resolveStoreVariables(val, dataStore)
+    }
+    return resolved
+  }
+  if (Array.isArray(value)) {
+    return value.map(item => resolveStoreVariables(item, dataStore))
+  }
+  return value
+}
+
+// Helper function to set nested value in object by path (e.g., "position.x" -> obj.position.x)
+function setNestedValue(obj: Record<string, any>, path: string, value: any): void {
+  const parts = path.split('.')
+  let current = obj
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i]
+    if (!(part in current) || typeof current[part] !== 'object' || current[part] === null) {
+      current[part] = {}
+    }
+    current = current[part]
+  }
+  current[parts[parts.length - 1]] = value
+}
+
 // Helper function to bind action props (onClick, onSubmit, etc.) to action handlers
-// Supports both object format: { name: "actionName", params: {...} } and string format (legacy)
+// Supports both object format: { name: "actionName", params: {...}, returns: {...} } and string format (legacy)
 export function bindActionProps(
   props: Record<string, any>,
   context: RenderContext,
@@ -33,7 +72,7 @@ export function bindActionProps(
   for (const propName of actionPropNames) {
     if (!processed[propName]) continue
     
-    // Handle object format: { name: "actionName", params: {...} }
+    // Handle object format: { name: "actionName", params: {...}, returns: {...} }
     if (typeof processed[propName] === 'object' && processed[propName] !== null && !Array.isArray(processed[propName])) {
       const actionConfig = processed[propName]
       const actionName = actionConfig.name
@@ -41,16 +80,40 @@ export function bindActionProps(
       if (typeof actionName === 'string') {
         const actionHandler = context.loadedActions.get(actionName)
         if (actionHandler) {
-          // Get params from props[propName].params
-          const actionParams = processed[propName].params || {}
+          // Get params from props[propName].params and resolve store variables
+          const rawParams = processed[propName].params || {}
+          const actionParams = resolveStoreVariables(rawParams, context.dataStore)
+          
+          // Get returns mapping if specified: { attr: path }
+          const returnsMapping = processed[propName].returns
           
           // Bind action handler with params from config
-          processed[propName] = (...args: any[]) => {
+          processed[propName] = async (...args: any[]) => {
             // Use params from props[propName].params, merge with any args passed (e.g., form data)
             const params = args.length > 0 && typeof args[0] === 'object' 
               ? { ...actionParams, ...args[0] } 
               : actionParams
-            return actionHandler(params)
+            
+            const result = await actionHandler(params)
+            
+            // If returns mapping is specified and action has a return value, store it
+            if (returnsMapping && result !== undefined && result !== null) {
+              const actionDef = getActionDefinition(actionName)
+              if (actionDef?.returns) {
+                // Store return values according to the mapping
+                context.setDataStore((prev) => {
+                  const updated = { ...prev }
+                  for (const [attr, path] of Object.entries(returnsMapping)) {
+                    if (typeof path === 'string' && result[attr] !== undefined) {
+                      setNestedValue(updated, path, result[attr])
+                    }
+                  }
+                  return updated
+                })
+              }
+            }
+            
+            return result
           }
         } else {
           console.warn(`Action "${actionName}" not found for ${propName}`)

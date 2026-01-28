@@ -58,30 +58,34 @@ const actionMap: Record<string, ActionDefinition> = {
       // For now, this could use window.location or a router
     }
   },
-  getPositionAndWeight: {
-    name: 'getPositionAndWeight',
-    description: 'Get value for current position and weight',
+  getValue: {
+    name: 'getValue',
+    description: 'Get a value with position and weight',
     params: {},
     returns: {
-      position: {
-        type: 'object',
-        properties: {
-          x: {
-            type: 'number',
-            description: 'X coordinate'
+      type: 'object',
+      properties: {
+        position: {
+          type: 'object',
+          properties: {
+            x: {
+              type: 'number',
+              description: 'X coordinate'
+            },
+            y: {
+              type: 'number',
+              description: 'Y coordinate'
+            }
           },
-          y: {
-            type: 'number',
-            description: 'Y coordinate'
-          }
+          required: ['x', 'y'],
+          description: 'Position coordinates'
         },
-        required: ['x', 'y'],
-        description: 'Position coordinates'
+        weight: {
+          type: 'number',
+          description: 'Weight value'
+        }
       },
-      weight: {
-        type: 'number',
-        description: 'Weight value'
-      }
+      required: ['position', 'weight']
     },
     handler: async (params: {}): Promise<{ position: { x: number; y: number }; weight: number }> => {
       return {
@@ -160,4 +164,14 @@ export function getAllActionDefinitions(excludeHandler: boolean = false): Action
     return defs.map(({ handler, ...rest }) => rest)
   }
   return defs
+}
+
+/**
+ * Get an action definition by name.
+ * 
+ * @param name - Action name in camelCase (e.g., "submit")
+ * @returns The action definition, or null if not found
+ */
+export function getActionDefinition(name: string): ActionDefinition | null {
+  return actionMap[name] || null
 }

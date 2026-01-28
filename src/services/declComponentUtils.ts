@@ -1,6 +1,6 @@
 import React, { type ReactNode } from 'react'
 import { type DeclElement } from './declCodeGenerator'
-import { getAllComponentDefinitions, loadComponent, getComponentDefinition, type RenderContext } from '../components/decl'
+import { getAllComponentDefinitions, loadComponent, getComponentDefinition, type RenderContext, resolveStoreVariables } from '../components/decl'
 import { getAllActionDefinitions, loadAction } from './actions'
 
 // Re-export RenderContext for backward compatibility
@@ -85,8 +85,8 @@ export function renderDeclElement(
   // Get child keys (array of strings)
   const childKeys = Array.isArray(children) ? children.filter((c): c is string => typeof c === 'string') : []
 
-  // Process props - keep children so processProps can process it, but remove key
-  const processedProps: Record<string, any> = { ...props }
+  // Process props - resolve store variables and keep children so processProps can process it, but remove key
+  const processedProps: Record<string, any> = resolveStoreVariables({ ...props }, context.dataStore)
   // If children came from topLevelChildren, put it in processedProps so processProps can see it
   if (topLevelChildren && Array.isArray(topLevelChildren)) {
     processedProps.children = topLevelChildren

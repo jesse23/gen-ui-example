@@ -15,6 +15,7 @@ interface DeclGenComponentProps {
 function DeclGenComponent({ declStructure }: DeclGenComponentProps) {
   const [loadedComponents, setLoadedComponents] = useState<Map<string, any>>(new Map())
   const [actionHandlers, setActionHandlers] = useState<Map<string, (...args: any[]) => any>>(new Map())
+  const [dataStore, setDataStore] = useState<Record<string, any>>({})
 
   // Load all components when component mounts first time
   useEffect(() => {
@@ -56,7 +57,11 @@ function DeclGenComponent({ declStructure }: DeclGenComponentProps) {
       const renderContext: RenderContext = {
         declElements: elementsMap,
         loadedComponents,
-        loadedActions: actionHandlers
+        loadedActions: actionHandlers,
+        dataStore,
+        setDataStore: (updater) => {
+          setDataStore(updater)
+        }
       }
       // Get root element key
       const rootElementKey = typeof rootElement.key === 'string' ? rootElement.key : String(rootElement.key || `element-${rootElement.type}`)

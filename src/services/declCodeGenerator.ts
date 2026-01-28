@@ -123,10 +123,16 @@ You must generate a JSON array with this exact structure:
     "type": "ComponentName",
     "props": {
       "propName": "propValue",
+      "propNameFromStore": "{variableName}",
+      "text": "{fullVariableName}",
       "propAction": {
         "name": "actionNameInLoadedActions",
         "params": {
-          "paramName": "paramValue"
+          "paramName": "paramValue",
+          "paramFromStore": "{variableName}"
+        },
+        "returns": {
+          "attr": "path"
         }
       }
     },
@@ -149,6 +155,38 @@ You must generate a JSON array with this exact structure:
 ]
 \`\`\`
 
+DATA STORE:
+- A data store is available starting from an empty object {}
+- To fetch a value from the store, use the syntax: "{variableName}" (e.g., "{userName}", "{positionX}")
+- CRITICAL RULE: Store variables MUST be the ENTIRE string value. NEVER embed {variable} inside other text.
+- CORRECT examples:
+  * "text": "{userName}"
+  * "text": "{positionX}"
+  * "label": "{fullPositionText}"
+- WRONG examples (DO NOT DO THIS):
+  * "text": "Position: {position}" ❌
+  * "text": "User: {userName}" ❌
+  * "text": "X: {position.x}, Y: {position.y}" ❌
+- If you need formatted text with variables, store the complete formatted string in the data store first, then reference it as "{formattedText}"
+- The store variable will be resolved to dataStore[variableName] at runtime
+- You can use {variableName} in any prop value or action param value, but it must be the complete value
+
+ACTION RETURNS:
+- If an action definition has a "returns" field (JSON Schema), it means the action returns data
+- To store the return value in the data store, add a "returns" field to the action config with the format: { "attr": "path" }
+- "attr" is the attribute name from the action's return value
+- "path" is the dot-separated path where to store it in the data store (e.g., "position.x", "user.name", "data")
+- Example: If action returns { position: { x: 3, y: 5 }, weight: 7 } and you want to store position.x at "posX" and weight at "weight", use:
+  {
+    "name": "actionName",
+    "params": {},
+    "returns": {
+      "position": "position",
+      "weight": "weight"
+    }
+  }
+- Or to store nested values: { "position": "position", "weight": "weight" } will store the entire position object and weight value
+
 REQUIREMENTS:
 1. Structure: Use a JSON array where each element is an object with key, type, props, and optional children
 2. Root: The first element in the array is the root element
@@ -158,7 +196,12 @@ REQUIREMENTS:
 6. Children: Use an array of child element keys (strings) to reference children, not nested objects
 7. Component preference: Always prefer using components from the component map over DOM elements
 8. Actions: For action field try to put proper action name and also give param properly.
-9. className: Only include className prop if the component's params include 'className', or for DOM elements
+9. Store variables - CRITICAL RULE: When using store variables with {variableName} syntax, the variable MUST be the ENTIRE prop value. NEVER embed {variable} inside strings with other text. Examples:
+   - CORRECT: "text": "{positionText}" or "text": "{userName}"
+   - WRONG: "text": "Position: {position}" or "text": "User: {userName}" or "text": "X: {x}, Y: {y}"
+   - If you need formatted text, store the complete formatted string in the data store first, then reference it
+10. Action returns: If an action has a "returns" field in its definition, include a "returns" mapping in the action config to store return values
+11. className: Only include className prop if the component's params include 'className', or for DOM elements
 
 ${componentContext}
 
