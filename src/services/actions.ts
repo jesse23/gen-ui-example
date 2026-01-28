@@ -11,6 +11,7 @@ export interface ActionDefinition {
   name: string
   description: string
   params?: Record<string, JSONSchema>
+  returns?: JSONSchema
   handler?: (...args: any[]) => any | Promise<any>
 }
 
@@ -28,12 +29,12 @@ const actionMap: Record<string, ActionDefinition> = {
     handler: async (params: { text?: string }): Promise<void> => {
       const submitText = params?.text || 'Form submitted'
       console.log('Submitting:', submitText)
-      
+
       // Show toast notification
       toast.success('Form submitted successfully!', {
         description: submitText,
       })
-      
+
       // TODO: Implement actual submission logic
     }
   },
@@ -55,6 +56,38 @@ const actionMap: Record<string, ActionDefinition> = {
       })
       // TODO: Implement actual navigation logic
       // For now, this could use window.location or a router
+    }
+  },
+  getPositionAndWeight: {
+    name: 'getPositionAndWeight',
+    description: 'Get value for current position and weight',
+    params: {},
+    returns: {
+      position: {
+        type: 'object',
+        properties: {
+          x: {
+            type: 'number',
+            description: 'X coordinate'
+          },
+          y: {
+            type: 'number',
+            description: 'Y coordinate'
+          }
+        },
+        required: ['x', 'y'],
+        description: 'Position coordinates'
+      },
+      weight: {
+        type: 'number',
+        description: 'Weight value'
+      }
+    },
+    handler: async (params: {}): Promise<{ position: { x: number; y: number }; weight: number }> => {
+      return {
+        position: { x: 3, y: 5 },
+        weight: 7
+      }
     }
   },
 }
@@ -110,7 +143,7 @@ export function loadAction(name: string): ((...args: any[]) => any | Promise<any
     }
     return actionDef.handler
   }
-  
+
   console.warn(`Action "${name}" not found in registry. Available:`, Object.keys(actionMap))
   return null
 }
