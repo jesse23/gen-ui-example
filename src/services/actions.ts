@@ -32,11 +32,11 @@ export interface ActionDefinition {
 const actionMap: Record<string, ActionDefinition> = {
   submit: {
     name: 'submit',
-    description: 'Submit form data or trigger a submission action',
+    description: 'Submit form data. Use the right params for the current use case, for example { "data": "{path to current object}" } where the path is the store path to the form/data object (e.g. "data": "{profile}" when the form data lives at store.profile).',
     params: {
       data: {
         type: 'object',
-        description: 'Form data as Record<string, Property> (field name -> { type, name, value, placeholder? })'
+        description: 'Required. Store path to form data. In DECL use string "{storePath}" so runtime resolves it (e.g. "data": "{profile}").'
       }
     },
     handler: async (params: Record<string, Property> | { data?: Record<string, Property> }): Promise<void> => {
@@ -59,11 +59,11 @@ const actionMap: Record<string, ActionDefinition> = {
   },
   navigate: {
     name: 'navigate',
-    description: 'Navigate to a different URL or route',
+    description: 'Navigate to a different URL or route. In DECL onClick include params: { "url": "<url or {storePath}>" }.',
     params: {
       url: {
         type: 'string',
-        description: 'The URL or route to navigate to'
+        description: 'Required. The URL or route. In DECL use a string or "{storePath}" to read from store.'
       }
     },
     handler: (params: { url: string }): void => {

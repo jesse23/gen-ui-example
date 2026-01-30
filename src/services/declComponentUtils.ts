@@ -1,10 +1,26 @@
 import React, { type ReactNode } from 'react'
-import { type DeclElement } from './declCodeGenerator'
 import { getAllComponentDefinitions, loadComponent, getComponentDefinition, type RenderContext, resolveStoreVariables } from '../components/decl'
 import { getAllActionDefinitions, loadAction } from './actions'
 
 // Re-export RenderContext for backward compatibility
 export type { RenderContext }
+
+/**
+ * Try to parse a JSON string. Returns null if the text is empty or invalid JSON.
+ * Caller is responsible for validating the result is the expected shape.
+ *
+ * @example
+ * const spec = tryParseJson<DeclSpec>(text)
+ * if (spec && Array.isArray(spec.view) && spec.data && typeof spec.data === 'object') { ... }
+ */
+export function tryParseJson<T = unknown>(text: string): T | null {
+  if (!text.trim()) return null
+  try {
+    return JSON.parse(text) as T
+  } catch (_) {
+    return null
+  }
+}
 
 // Load all components from the component map (like blobJsLoader does)
 export async function loadAllComponents(): Promise<Map<string, any>> {

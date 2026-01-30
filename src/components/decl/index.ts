@@ -2,7 +2,7 @@
 // Each component is dynamically imported so Vite can create separate chunks
 // This keeps the main bundle small and loads components on-demand
 
-import { type DeclElement } from '../../services/declCodeGenerator'
+import { type DeclNode, type DeclData } from '../../services/declCodeGenerator'
 import { renderDeclElements } from '../../services/declComponentUtils'
 import { getActionDefinition } from '../../services/actions'
 
@@ -11,11 +11,11 @@ export type JSONSchema = Record<string, any>
 
 // Render context containing all necessary data for rendering
 export interface RenderContext {
-  declElements: Map<string, DeclElement>
+  declElements: Map<string, DeclNode>
   loadedComponents: Map<string, any>
   loadedActions: Map<string, (...args: any[]) => any>
-  dataStore: Record<string, any>
-  setDataStore: (updater: (prev: Record<string, any>) => Record<string, any>) => void
+  dataStore: DeclData
+  setDataStore: (updater: (prev: DeclData) => DeclData) => void
 }
 
 // Type for processing props before rendering (e.g., converting array keys to rendered nodes)
@@ -27,7 +27,7 @@ export type ProcessPropsCallback = (
 // Helper function to resolve {variable} syntax to fetch from data store
 export function resolveStoreVariables(
   value: any,
-  dataStore: Record<string, any>
+  dataStore: DeclData
 ): any {
   if (typeof value === 'string' && value.startsWith('{') && value.endsWith('}')) {
     const path = value.slice(1, -1).trim()

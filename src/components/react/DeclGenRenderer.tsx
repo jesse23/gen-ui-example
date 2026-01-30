@@ -1,23 +1,26 @@
 import React, { useState, useEffect, type ReactNode } from 'react'
-import { type DeclStructure, type DeclElement, type DeclAggregatedResponse, type DeclStreamResponse } from '../../services/declCodeGenerator'
-import { 
-  loadAllComponents, 
-  loadAllActions, 
-  renderDeclElement, 
-  type RenderContext 
+import {
+  type DeclNode,
+  type DeclSpec,
+  type DeclData
+} from '../../services/declCodeGenerator'
+import {
+  loadAllComponents,
+  loadAllActions,
+  renderDeclElement,
+  type RenderContext
 } from '../../services/declComponentUtils'
 import Spinner from './Spinner'
 
-interface DeclGenComponentProps {
-  declStructure: DeclStreamResponse | DeclAggregatedResponse | null | undefined
+interface DeclGenRendererProps {
+  /** The DECL spec to render (view + data). undefined = loading, null = error/empty */
+  declSpec: DeclSpec | null | undefined
 }
 
-function DeclGenComponent({ declStructure }: DeclGenComponentProps) {
+function DeclGenRenderer({ declSpec }: DeclGenRendererProps) {
   const [loadedComponents, setLoadedComponents] = useState<Map<string, any>>(new Map())
   const [actionHandlers, setActionHandlers] = useState<Map<string, (...args: any[]) => any>>(new Map())
-  const [dataStore, setDataStore] = useState<Record<string, any>>({})
-  const [view, setView] = useState<DeclStructure>([])
-  const processedChunksRef = React.useRef<number>(0)
+  const [dataStore, setDataStore] = useState<DeclData>({})
 
   // Load all components when component mounts first time
   useEffect(() => {
@@ -32,49 +35,17 @@ function DeclGenComponent({ declStructure }: DeclGenComponentProps) {
     setActionHandlers(actions)
   }, []) // Only run on mount
 
-  // Incrementally aggregate streamed chunks into { view, data }
+  // Sync dataStore with declSpec.data when it changes
   useEffect(() => {
-    // Reset on new generation/loading/error
-    if (declStructure === undefined || declStructure === null) {
-      processedChunksRef.current = 0
-      setView([])
+    if (declSpec?.data) {
+      setDataStore(declSpec.data)
+    } else {
       setDataStore({})
-      return
     }
+  }, [declSpec?.data])
 
-    // Final aggregated result (non-stream)
-    if (!Array.isArray(declStructure)) {
-      processedChunksRef.current = 0
-      setView(declStructure.view || [])
-      setDataStore(declStructure.data || {})
-      return
-    }
-
-    // Streamed chunks array
-    const chunks = declStructure
-    const start = processedChunksRef.current
-    const end = chunks.length
-    if (end <= start) return
-
-    for (let i = start; i < end; i++) {
-      const chunk: any = chunks[i]
-      if (!chunk || typeof chunk !== 'object') continue
-
-      if ('view' in chunk && Array.isArray(chunk.view)) {
-        setView((prev) => [...prev, ...chunk.view])
-        continue
-      }
-
-      if ('data' in chunk && chunk.data && typeof chunk.data === 'object' && !Array.isArray(chunk.data)) {
-        setDataStore((prev) => ({ ...prev, ...chunk.data }))
-      }
-    }
-
-    processedChunksRef.current = end
-  }, [declStructure])
-
-  // Show loader when declStructure is undefined (loading state)
-  if (declStructure === undefined) {
+  // Show loader when declSpec is undefined (loading state)
+  if (declSpec === undefined) {
     return React.createElement('div', { className: 'flex-1 overflow-auto p-8 bg-white flex items-center justify-center' },
       React.createElement('div', { className: 'flex flex-col items-center justify-center' },
         React.createElement(Spinner, { size: 'lg', className: 'text-blue-500 mb-4' }),
@@ -84,33 +55,36 @@ function DeclGenComponent({ declStructure }: DeclGenComponentProps) {
     )
   }
 
-  // Render directly - React will re-render when declStructure changes
+  // Get view from declSpec
+  const view = declSpec?.view
+
+  // Render directly - React will re-render when declSpec changes
   let renderedComponent: ReactNode = null
 
   if (view && Array.isArray(view) && view.length > 0) {
     try {
-      // Convert elements array to Map for faster lookups
-      const elementsMap = new Map<string, DeclElement>()
+      // Convert view nodes to Map for faster lookups
+      const nodesMap = new Map<string, DeclNode>()
       const childKeys = new Set<string>()
-      view.forEach((el) => {
-        const key = typeof el.key === 'string' ? el.key : String(el.key || `element-${el.type}`)
-        elementsMap.set(key, el)
-        // Collect keys that appear as children of any element
-        const children = el.children ?? (el.props?.children && Array.isArray(el.props.children) ? el.props.children : [])
-        const content = el.props?.content && Array.isArray(el.props.content) ? el.props.content : []
+      view.forEach((node) => {
+        const key = typeof node.key === 'string' ? node.key : String(node.key || `node-${node.type}`)
+        nodesMap.set(key, node)
+        // Collect keys that appear as children of any node
+        const children = node.children ?? (node.props?.children && Array.isArray(node.props.children) ? node.props.children : [])
+        const content = node.props?.content && Array.isArray(node.props.content) ? node.props.content : []
         ;[...children, ...content].forEach((c) => {
           if (typeof c === 'string') childKeys.add(c)
         })
       })
-      // Root elements are those not referenced as children by any other element
+      // Root nodes are those not referenced as children by any other node
       const rootKeys = view
-        .map((el) => (typeof el.key === 'string' ? el.key : String(el.key || `element-${el.type}`)))
+        .map((node) => (typeof node.key === 'string' ? node.key : String(node.key || `node-${node.type}`)))
         .filter((key) => !childKeys.has(key))
       // If no clear root (no parent-child refs), treat all as roots
-      const keysToRender = rootKeys.length > 0 ? rootKeys : view.map((el) => (typeof el.key === 'string' ? el.key : String(el.key || `element-${el.type}`)))
+      const keysToRender = rootKeys.length > 0 ? rootKeys : view.map((node) => (typeof node.key === 'string' ? node.key : String(node.key || `node-${node.type}`)))
 
       const renderContext: RenderContext = {
-        declElements: elementsMap,
+        declElements: nodesMap,
         loadedComponents,
         loadedActions: actionHandlers,
         dataStore,
@@ -144,4 +118,4 @@ function DeclGenComponent({ declStructure }: DeclGenComponentProps) {
   )
 }
 
-export default DeclGenComponent
+export default DeclGenRenderer

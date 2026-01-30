@@ -1,3 +1,49 @@
+# Problem Context
+## AWS Siemens Entry
+https://identity.industrysoftware.automation.siemens.com/WebkeyLogin/AWS/roleSelection
+
+## Test URL
+https://katyms27-moos.testplmcloudsolutions.com/hosting/discovery
+
+## Kathryn's ALB
+https://us-east-1.console.aws.amazon.com/ec2/home?region=us-east-1#ELBListenerV2:loadBalancerArn=arn:aws:elasticloadbalancing:us-east-1:906956190433:loadbalancer/app/ALB-moos-prd-katyms27/51849b89cd4b8a49;listenerPort=443;action=None;tab=Rules
+
+### ALB Name
+ALB-moos-prd-katyms27
+
+- group sg-041cc52c7c7797a76
+- sub   sg-00b81d66bbd667f45
+
+Secure listener setting
+
+### VPC
+https://us-east-1.console.aws.amazon.com/vpcconsole/home?region=us-east-1#VpcDetails:VpcId=vpc-0dc9903fd15be3f23
+
+
+## Kathryn's Samauth
+https://samauthconsole.us-east-1.sws.siemens.com/app/32acb7ae26f147938deb96f0bae259ea
+https://samauthconsole.preprod.teamcenterwebservices.com/
+
+https://samauthconsole.us-east-1.sws.siemens.com/app/965a15e4e01d437c9aaf58693f07c280
+
+{
+    "clientKey": {
+        "clientId": "I2yIkzC2IyXZ94i6O7xz8",
+        "clientSecret": "G9map2jfs0dKL7HiLUionmuZhAQF076K8mvqKks9Na_JCZBIOCfQPtJE6jaSqErY-Ba5LPI9FEM6YtDwn2WqkQ"
+    }
+}
+
+## S3 for save log
+katyms27-moos-s3
+
+## rules
+openid sam_account samauth.ten email profile
+
+## extra param optional
+prompt: login+consent
+display: page
+
+
 # ALB Samauth work flow 1
 ## Hosting discovery
 - URL
