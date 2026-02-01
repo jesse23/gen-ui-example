@@ -1,8 +1,8 @@
-# Proposal: AI-Driven UI Generation with JSON Schema
+# Agentic Generative UI Solution
 
 ## Overview
 
-This proposal describes a system for generating UI from natural language prompts. The key insight: **treat components and actions as tools that AI can reason about and compose**. This turns UI generation into a tool-use problem—something AI models excel at.
+DECL (Declarative Component Language) is a system for generating UI from natural language prompts. The key insight: **treat components and actions as tools that AI can reason about and compose**. This turns UI generation into a tool-use problem—something AI models excel at.
 
 ---
 
@@ -10,13 +10,38 @@ This proposal describes a system for generating UI from natural language prompts
 
 **If you treat component inputs and actions as tools, UI generation becomes an AI reasoning problem—which AI is very good at.**
 
-The architecture is built on three concepts:
+The architecture is built on four concepts:
 
 - **Components** = Tools that take structured inputs (props) and produce UI
 - **Actions** = Tools that handle the UI boundary—communication with external systems (server requests, reading/writing data)
 - **LLM Engine** = Reasons about which tools to use, how to compose them, and what inputs to provide
+- **JSON Chunks** = LLM returns structured JSON chunks as streaming messages; the renderer consumes them incrementally to update the UI in real-time
 
 Instead of teaching AI UI-specific patterns, we leverage its natural strength in tool-use and reasoning.
+
+---
+
+## Architecture Extensibility
+
+This approach generalizes beyond UI generation:
+
+- **Any JSON structure** can be streamed and rendered incrementally using the same pattern
+- **Domain-agnostic**: as long as the renderer can progressively consume JSON chunks, it can handle streaming updates
+
+```mermaid
+flowchart TB
+  subgraph Core["Core principle"]
+    P[User Prompt/Intention]
+    LLM[LLM Engine]
+    P --> LLM
+    LLM --> |"reasons about & composes"| Tools
+    Tools[(Components + Actions\nas tools)]
+    Tools -.-> |"structured inputs\n(props / params)"| LLM
+    LLM --> |"streams"| Chunks[JSON Chunks]
+    Chunks --> |"consumes incrementally"| R[Renderer]
+    R --> UI[Browser UI]
+  end
+```
 
 ---
 
@@ -24,385 +49,315 @@ Instead of teaching AI UI-specific patterns, we leverage its natural strength in
 
 **Simple Pipeline:**
 ```
-User Prompt → AI selects tools (Components + Actions) → Validates with JSON Schema → Generates React component tree → Browser renders UI
+User Prompt → AI selects tools (Components + Actions) → Generates DeclSpec (view + data) → Renderer creates React component tree → Browser renders UI
 ```
 
 **Key Design Decisions:**
-- Use JSON Schema (not Zod) to describe components and actions
-- Leverage existing `components.ts` registry
-- Create parallel `actions.ts` registry for action definitions
-- Everything is a tool for AI reasoning
+- Use JSON Schema to describe component and action parameters
+- Streaming output format: array of `{ view: [...] }` or `{ data: {...} }` chunks
+- Components and actions registered in separate catalogs with definitions
+- Two-way data binding via `dataBind` prop and store variables via `{path}` syntax
 
 ---
 
-## 1. Component Catalog
+### 1. Type Definitions
 
-Define components using JSON Schema. Export from `services/components.ts`:
+Core types used throughout the system (defined in `src/services/decl/types.ts`):
 
 ```typescript
-// services/components.ts
-export const componentCatalog = {
-  Card: {
-    props: {
-      type: 'object',
-      properties: {
-        title: { type: 'string' },
-        description: { type: 'string', nullable: true },
-      },
-      required: ['title'],
-    },
-    hasChildren: true,
-  },
-  Button: {
-    props: {
-      type: 'object',
-      properties: {
-        label: { type: 'string' },
-        action: { type: 'string' },
-      },
-      required: ['label', 'action'],
-    },
-  },
-};
+// A single node in the DECL view tree (instance of a component)
+interface DeclNode {
+  key: string           // Unique identifier for this node
+  type: string          // Component type (must match registered component)
+  props?: Record<string, any>  // Component properties
+  children?: string[]   // Array of child node keys (references)
+}
+
+// View tree: array of DeclNodes (flattened tree)
+type DeclView = DeclNode[]
+
+// Data backing the view (store / view model)
+type DeclData = Record<string, any>
+
+// Complete UI spec: view tree + data
+interface DeclSpec {
+  view: DeclView
+  data: DeclData
+}
 ```
 
-**Why JSON Schema?**
-- Universal standard (not TypeScript/Zod specific)
-- AI models understand it well
-- Language-agnostic
-
 ---
 
-## 2. Action Catalog
+### 2. Component Registry
 
-Create `actions.ts` mirroring the `components.ts` structure:
+Components are registered in `src/components/decl/index.ts` with their JSON Schema definitions:
 
 ```typescript
-// services/actions.ts
-const actionImportMap: Record<string, () => Promise<any>> = {
-  submit: () => import('../actions/submit'),
-  navigate: () => import('../actions/navigate'),
-};
+interface ComponentDefinition {
+  name: string
+  description: string
+  params?: Record<string, JSONSchema>
+  load?: () => Promise<any>
+  resolveProps?: ResolvePropsCallback  // Optional: transform DECL props to component props
+}
 
-export async function loadAction(name: string): Promise<Function | null> {
-  const importFn = actionImportMap[name];
-  if (importFn) {
-    const module = await importFn();
-    return module.default || module[name] || module;
+const componentImportMap: Record<string, ComponentDefinition> = {
+  // ....
+  Field: {
+    name: 'Field',
+    description: 'Form field driven by a Property in the store via dataBind',
+    params: {
+      dataBind: {
+        type: 'string',
+        description: 'Dot-separated path to a Property object in the store'
+      }
+    },
+    load: () => import('./Field'),
+    resolveProps: (props, context) => {
+      // Convert dataBind to property + onChange
+      const processed = { ...props }
+      if (processed.dataBind) {
+        const binding = createDataBind(processed.dataBind, context)
+        processed.property = binding.get()
+        processed.onChange = (value) => binding.set({ ...processed.property, value })
+        delete processed.dataBind
+      }
+      return processed
+    }
   }
-  return null;
+  // ....
+}
+```
+
+**Registry Functions:**
+```typescript
+// Get all component definitions (for AI prompt)
+getAllComponentDefinitions(excludeLoad?: boolean): ComponentDefinition[]
+
+// Load a component by name
+loadComponent(name: string): Promise<any>
+
+// Check if component exists
+hasComponent(name: string): boolean
+
+// Register a new component at runtime
+registerComponent(name: string, component: any, params?: JSONSchema, description?: string): void
+```
+
+---
+
+### 3. Action Registry
+
+Actions are registered in `src/services/actions.ts`:
+
+```typescript
+interface ActionDefinition {
+  name: string
+  description: string
+  params?: Record<string, JSONSchema>
+  returns?: JSONSchema
+  handler?: (...args: any[]) => any | Promise<any>
 }
 
-export function getActionNames(): string[] {
-  return Object.keys(actionImportMap);
-}
-
-// Action schemas
-export const actionCatalog = {
+const actionMap: Record<string, ActionDefinition> = {
+  // ....
   submit: {
+    name: 'submit',
+    description: 'Submit form data',
     params: {
-      type: 'object',
-      properties: {
-        formId: { type: 'string' },
-      },
-      required: ['formId'],
+      data: {
+        type: 'object',
+        description: 'Store path to form data. Use "{storePath}" syntax.'
+      }
     },
+    handler: async (params) => {
+      // Process and submit form data
+      toast.success('Form submitted!', { description: JSON.stringify(params) })
+    }
   },
-  navigate: {
-    params: {
-      type: 'object',
-      properties: {
-        url: { type: 'string' },
-      },
-      required: ['url'],
-    },
-  },
-};
+  // ....
+}
 ```
 
-**Action Implementation Example:**
+**Registry Functions:**
 ```typescript
-// actions/submit.ts
-export default async function submit(params: { formId: string }) {
-  // Make server request, update external system, etc.
-  console.log('Submitting form:', params.formId);
-}
+// Get all action definitions (for AI prompt)
+getAllActionDefinitions(excludeHandler?: boolean): ActionDefinition[]
+
+// Load an action handler by name
+loadAction(name: string): Function | null
+
+// Check if action exists
+hasAction(name: string): boolean
+
+// Register a new action at runtime
+registerAction(name: string, handler: Function, params?: JSONSchema, description?: string): void
 ```
 
 ---
 
-## 3. AI Prompt Generation
+### 4. AI Output Format
 
-Generate a system prompt that presents components and actions as tools:
+The AI generates a **streaming array of update chunks**. Each chunk has exactly one key: `view` or `data`.
 
-```typescript
-// services/uiDefGenerator.ts
-import { componentCatalog } from '@/services/components';
-import { actionCatalog } from '@/services/actions';
-
-function generateCatalogPrompt() {
-  const componentTools = Object.entries(componentCatalog).map(([name, def]) => ({
-    name,
-    description: `Component: ${name}`,
-    inputSchema: def.props,
-    hasChildren: def.hasChildren,
-  }));
-
-  const actionTools = Object.entries(actionCatalog).map(([name, def]) => ({
-    name,
-    description: `Action: ${name}`,
-    inputSchema: def.params,
-  }));
-
-  return `You are a UI generation assistant. You have access to the following tools:
-
-COMPONENTS (UI building blocks):
-${JSON.stringify(componentTools, null, 2)}
-
-ACTIONS (UI boundary - external system communication):
-${JSON.stringify(actionTools, null, 2)}
-
-Given a user's request, reason about which components and actions to use, compose them into a React component tree, and provide the correct inputs according to each tool's JSON Schema.
-
-Generate a JSON structure using a flattened format with references...`;
-}
+**Streaming Format:**
+```json
+[
+  { "data": { "pageTitle": "Contact Us" } },
+  { "view": [{ "key": "root", "type": "Card", "props": { "title": "{pageTitle}" }, "children": ["form1"] }] },
+  { "data": { "profile": { "firstName": { "type": "text", "name": "First Name", "value": "", "placeholder": "First name" } } } },
+  { "view": [{ "key": "form1", "type": "Form", "props": {}, "children": ["f1", "submitBtn"] }] },
+  { "view": [{ "key": "f1", "type": "Field", "props": { "dataBind": "profile.firstName" } }] },
+  { "view": [{ "key": "submitBtn", "type": "Button", "props": { "text": "Submit", "onClick": { "name": "submit", "params": { "data": "{profile}" } } } }] }
+]
 ```
+
+**Chunk Rules:**
+- Each chunk = one array element with exactly one key: `"view"` or `"data"`
+- Data chunks should be small (1-2 fields) and interleaved with view chunks
+- Client appends view arrays and deep-merges data objects
+- This enables incremental rendering as chunks arrive
+
+**View Node Structure:**
+- `key`: Unique identifier (used for references and React keys)
+- `type`: Component type (must match registered component)
+- `props`: Component properties (validated against JSON Schema)
+- `children`: Array of child node keys (references, not nested objects)
 
 ---
 
-## 4. AI Output Format
+### 5. Data Binding
 
-The AI generates a **flattened tree structure** where elements are stored in an `elements` object and children are referenced by key.
-
-**Example:** Creating a contact form with name, email, and message fields:
-
+**Store Variables (`{path}` syntax):**
 ```json
 {
-  "root": "card",
-  "elements": {
-    "card": {
-      "key": "card",
-      "type": "Card",
-      "props": {
-        "title": "Contact Us",
-        "maxWidth": "md"
-      },
-      "children": ["name", "email", "message", "submit"]
-    },
-    "name": {
-      "key": "name",
-      "type": "Input",
-      "props": {
-        "label": "Name",
-        "name": "name"
-      }
-    },
-    "email": {
-      "key": "email",
-      "type": "Input",
-      "props": {
-        "label": "Email",
-        "name": "email"
-      }
-    },
-    "message": {
-      "key": "message",
-      "type": "Textarea",
-      "props": {
-        "label": "Message",
-        "name": "message"
-      }
-    },
-    "submit": {
-      "key": "submit",
-      "type": "Button",
-      "props": {
-        "label": "Send Message",
-        "variant": "primary"
-      }
+  "data": { "userName": "John", "position": { "x": 10, "y": 20 } },
+  "view": [
+    { "key": "label", "type": "Label", "props": { "text": "{userName}" } },
+    { "key": "info", "type": "Label", "props": { "text": "{position.x}" } }
+  ]
+}
+```
+
+**Two-Way Binding (`dataBind` prop):**
+```json
+{
+  "data": { 
+    "profile": { 
+      "email": { "type": "email", "name": "Email", "value": "", "placeholder": "Enter email" }
     }
+  },
+  "view": [
+    { "key": "emailField", "type": "Field", "props": { "dataBind": "profile.email" } }
+  ]
+}
+```
+
+**Property Object Shape (for Field component):**
+```typescript
+interface Property {
+  type: 'text' | 'email' | 'number' | 'password' | 'select' | ...
+  name: string          // Label text
+  value: any            // Current value
+  placeholder?: string
+  readOnly?: boolean
+  disabled?: boolean
+  description?: string
+  options?: { value: string; label: string }[]  // For select type
+}
+```
+
+---
+
+### 6. Code Generation API
+
+The `generate` function in `src/services/decl/declCodeGenerator.ts`:
+
+```typescript
+import { generate, type DeclSpec } from '../services/decl'
+import { getAllComponentDefinitions } from '../components/decl'
+import { getAllActionDefinitions } from '../services/actions'
+
+// Generate with streaming updates
+const spec = await generate('Create a contact form', {
+  componentDefinitions: getAllComponentDefinitions(true),  // Exclude load functions
+  actionDefinitions: getAllActionDefinitions(true),        // Exclude handlers
+  onUpdate: (streamingSpec: DeclSpec) => {
+    // Called on each streaming update
+    setDeclSpec(streamingSpec)
+  }
+})
+```
+
+---
+
+### 7. Renderer
+
+The `DeclGenRenderer` component renders a `DeclSpec`:
+
+```typescript
+import DeclGenRenderer from '../components/react/DeclGenRenderer'
+
+// declSpec: undefined = loading, null = error, DeclSpec = render
+<DeclGenRenderer declSpec={declSpec} />
+```
+
+**Render Context:**
+```typescript
+interface RenderContext {
+  declNodes: Map<string, DeclNode>           // All nodes by key
+  loadedComponents: Map<string, any>         // Loaded React components
+  loadedActions: Map<string, Function>       // Loaded action handlers
+  dataStore: DeclData                        // Current data store
+  setDataStore: (updater: (prev) => DeclData) => void  // Update data store
+}
+```
+
+**Rendering Process:**
+1. Convert view array to Map for fast lookups
+2. Find root nodes (nodes not referenced as children by any other node)
+3. For each node, resolve props using `resolveProps` callback if defined
+4. Replace `{path}` variables with store values
+5. Convert child key arrays to rendered React nodes
+6. Create React elements recursively
+
+---
+
+### 8. Available Components
+
+| Component | Description | Key Props |
+|-----------|-------------|-----------|
+| Card | Container with header/content/footer | title, description, content, footer, children |
+| Button | Clickable button with action | text, variant, size, onClick |
+| Form | Form wrapper | children |
+| Field | Data-bound form field | dataBind |
+| TextBox | Text input with data binding | dataBind, placeholder, type |
+| Label | Text label | text |
+| Input | Basic input field | type, placeholder |
+| ExistWhen | Conditional rendering | condition, children |
+| Breadcrumb | Navigation breadcrumb | separator |
+
+---
+
+### 9. Available Actions
+
+| Action | Description | Params | Returns |
+|--------|-------------|--------|---------|
+| submit | Submit form data | data: object | - |
+| navigate | Navigate to URL | url: string | - |
+| getValue | Get position and weight | - | { position, weight } |
+| plusOne | Increment a number | value: number | { value: number } |
+
+**Action Returns Mapping:**
+```json
+{
+  "onClick": {
+    "name": "getValue",
+    "params": {},
+    "returns": { "position": "result.pos", "weight": "result.w" }
   }
 }
 ```
 
-**Structure:**
-- `root`: Key of the root element
-- `elements`: Flat object with all elements keyed by unique identifier
-- Each element has:
-  - `key`: Unique identifier (used for references)
-  - `type`: Component type (must match registered component)
-  - `props`: Component properties (validated against JSON Schema)
-  - `children`: Array of child element keys (references, not nested objects)
-
-**Why this format?**
-- Easier for AI to generate correctly (less nesting complexity)
-- Prevents circular dependencies
-- Easy to validate and transform into React component tree
-- Supports efficient rendering and updates
-
 ---
 
-## 5. API Route
-
-Set up streaming API route:
-
-```typescript
-// app/api/generate/route.ts
-import { streamText } from 'ai';
-import { generateCatalogPrompt } from '@/services/uiDefGenerator';
-import { componentCatalog } from '@/services/components';
-import { actionCatalog } from '@/services/actions';
-
-export async function POST(req: Request) {
-  const { prompt } = await req.json();
-  const systemPrompt = generateCatalogPrompt(componentCatalog, actionCatalog);
-
-  const result = streamText({
-    model: 'anthropic/claude-haiku-4.5',
-    system: systemPrompt,
-    prompt,
-  });
-
-  return new Response(result.textStream, {
-    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-  });
-}
-```
-
----
-
-## 6. Renderer Integration
-
-Use existing rendering infrastructure:
-
-```typescript
-// app/page.tsx
-'use client';
-
-import { useUIStream } from '@/hooks/useUIStream';
-import { Renderer } from '@/components/Renderer';
-import { getComponentNames, loadComponent } from '@/services/components';
-import { getActionNames, loadAction } from '@/services/actions';
-
-export default function Page() {
-  const { tree, isLoading, generate } = useUIStream({
-    endpoint: '/api/generate',
-  });
-
-  // Build component map from registry
-  const componentMap = useMemo(async () => {
-    const names = getComponentNames();
-    const map = {};
-    for (const name of names) {
-      map[name] = await loadComponent(name);
-    }
-    return map;
-  }, []);
-
-  // Build action handlers from registry
-  const actionHandlers = useMemo(async () => {
-    const names = getActionNames();
-    const handlers = {};
-    for (const name of names) {
-      handlers[name] = await loadAction(name);
-    }
-    return handlers;
-  }, []);
-
-  return (
-    <div>
-      <form onSubmit={(e) => {
-        e.preventDefault();
-        generate(new FormData(e.currentTarget).get('prompt'));
-      }}>
-        <input name="prompt" placeholder="Describe what you want..." />
-        <button type="submit" disabled={isLoading}>Generate</button>
-      </form>
-
-      <Renderer 
-        tree={tree} 
-        componentMap={componentMap}
-        actionHandlers={actionHandlers}
-      />
-    </div>
-  );
-}
-```
-
----
-
-## Key Advantages
-
-### 1. **AI-Native Approach**
-- Treats UI generation as a tool-use problem (AI's strength)
-- JSON Schema is well-understood by AI models
-- Clear contracts enable better reasoning
-
-### 2. **Leverages Existing Infrastructure**
-- Reuses `components.ts` pattern
-- Parallel `actions.ts` structure for consistency
-- No need to rewrite component system
-
-### 3. **Language-Agnostic**
-- JSON Schema is universal (not TypeScript/Zod specific)
-- Can be consumed by any language or system
-- Easier to integrate with external tools
-
-### 4. **Separation of Concerns**
-- Components = UI building blocks
-- Actions = UI boundary (external system communication)
-- Clear boundaries and responsibilities
-
-### 5. **Extensibility**
-- Easy to add new components (just register in `components.ts`)
-- Easy to add new actions (just register in `actions.ts`)
-- Schema validation ensures correctness
-
----
-
-## Implementation Phases
-
-### Phase 1: Foundation
-- [ ] Create JSON Schema definitions for existing components
-- [ ] Create `actions.ts` registry structure
-- [ ] Build catalog generation from registries
-- [ ] Create prompt generation utility
-
-### Phase 2: AI Integration
-- [ ] Implement streaming API route
-- [ ] Create system prompt with tool definitions
-- [ ] Parse AI output into component tree structure
-- [ ] Validate against JSON schemas
-
-### Phase 3: Rendering
-- [ ] Integrate with existing renderer
-- [ ] Wire up component map from registry
-- [ ] Wire up action handlers from registry
-- [ ] Handle data binding and state
-
-### Phase 4: Polish
-- [ ] Error handling and validation
-- [ ] Streaming UI updates
-- [ ] Code export functionality
-- [ ] Documentation and examples
-
----
-
-## Comparison with json-render
-
-| Aspect | json-render | This Proposal |
-|--------|-------------|----------------|
-| Schema Format | Zod (TypeScript) | JSON Schema (universal) |
-| Component Source | Manual catalog | Auto-derived from `components.ts` |
-| Actions | Defined in catalog | Separate `actions.ts` registry |
-| Philosophy | UI-specific framework | Tool-use reasoning problem |
-| Dependencies | @json-render/core, zod | Pure JSON Schema, existing infra |
-
----
-
-## References
-
-- [json-render Quick Start](https://json-render.dev/docs/quick-start)
-- [JSON Schema Specification](https://json-schema.org/)
-- Existing `components.ts` implementation
-- Existing `GenUiComponent.tsx` rendering infrastructure

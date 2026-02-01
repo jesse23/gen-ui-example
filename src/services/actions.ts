@@ -213,3 +213,21 @@ export function getAllActionDefinitions(excludeHandler: boolean = false): Action
 export function getActionDefinition(name: string): ActionDefinition | null {
   return actionMap[name] || null
 }
+
+/**
+ * Load all actions from the action registry.
+ * Returns a Map of action name to handler (for use in RenderContext.loadedActions).
+ */
+export function loadAllActions(): Map<string, (...args: any[]) => any> {
+  const handlers = new Map<string, (...args: any[]) => any>()
+  const actionDefs = getAllActionDefinitions()
+
+  for (const def of actionDefs) {
+    const handler = loadAction(def.name)
+    if (handler) {
+      handlers.set(def.name, handler)
+    }
+  }
+
+  return handlers
+}

@@ -1,0 +1,1 @@
+import{s as e}from"./index-B3oaUjaX.js";export{e as Label};

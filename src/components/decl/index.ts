@@ -2,193 +2,35 @@
 // Each component is dynamically imported so Vite can create separate chunks
 // This keeps the main bundle small and loads components on-demand
 
-import { type DeclNode, type DeclData } from '../../services/declCodeGenerator'
-import { renderDeclElements } from '../../services/declComponentUtils'
-import { getActionDefinition } from '../../services/actions'
+import {
+  type DeclNode,
+  type DeclData,
+  renderDeclNodes,
+  createDataBind,
+  createActionBind
+} from '../../services/decl'
 
 // JSON Schema type for component parameters (flat Record of prop name to schema)
 export type JSONSchema = Record<string, any>
 
 // Render context containing all necessary data for rendering
 export interface RenderContext {
-  declElements: Map<string, DeclNode>
+  declNodes: Map<string, DeclNode>
   loadedComponents: Map<string, any>
   loadedActions: Map<string, (...args: any[]) => any>
   dataStore: DeclData
   setDataStore: (updater: (prev: DeclData) => DeclData) => void
 }
 
-// Type for processing props before rendering (e.g., converting array keys to rendered nodes)
-export type ProcessPropsCallback = (
+/**
+ * Resolves DECL-shaped props (e.g. child keys, action configs) into the props
+ * the underlying React component expects (e.g. rendered nodes, callbacks).
+ * Optional per-component adapter; omit when DECL params match component props.
+ */
+export type ResolvePropsCallback = (
   props: Record<string, any>,
   context: RenderContext
 ) => Record<string, any>
-
-// Helper function to resolve {variable} syntax to fetch from data store
-export function resolveStoreVariables(
-  value: any,
-  dataStore: DeclData
-): any {
-  if (typeof value === 'string' && value.startsWith('{') && value.endsWith('}')) {
-    const path = value.slice(1, -1).trim()
-    // Support nested paths (e.g. "form.myField.value") via getNestedValue
-    return path.includes('.') ? getNestedValue(dataStore, path) : dataStore[path]
-  }
-  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-    const resolved: Record<string, any> = {}
-    for (const [key, val] of Object.entries(value)) {
-      resolved[key] = resolveStoreVariables(val, dataStore)
-    }
-    return resolved
-  }
-  if (Array.isArray(value)) {
-    return value.map(item => resolveStoreVariables(item, dataStore))
-  }
-  return value
-}
-
-// Helper function to get nested value from object by path (e.g., "position.x" -> obj.position.x)
-function getNestedValue(obj: Record<string, any>, path: string): any {
-  const parts = path.split('.')
-  let current = obj
-  for (const part of parts) {
-    if (current === null || current === undefined || typeof current !== 'object') {
-      return undefined
-    }
-    current = current[part]
-  }
-  return current
-}
-
-// Helper function to set nested value in object by path (e.g., "position.x" -> obj.position.x)
-function setNestedValue(obj: Record<string, any>, path: string, value: any): void {
-  const parts = path.split('.')
-  let current = obj
-  for (let i = 0; i < parts.length - 1; i++) {
-    const part = parts[i]
-    if (!(part in current) || typeof current[part] !== 'object' || current[part] === null) {
-      current[part] = {}
-    }
-    current = current[part]
-  }
-  current[parts[parts.length - 1]] = value
-}
-
-/**
- * Create a data binding for a store path.
- * Returns a getter and setter function for two-way binding.
- * 
- * @param path - Dot-separated path in the data store (e.g., "user.name", "form.email")
- * @param context - Render context with dataStore and setDataStore
- * @returns Object with `get` (getter) and `set` (setter) functions
- */
-export function createDataBind(
-  path: string,
-  context: RenderContext
-): { get: () => any; set: (value: any) => void } {
-  return {
-    get: () => {
-      return getNestedValue(context.dataStore, path)
-    },
-    set: (newValue: any) => {
-      context.setDataStore((prev) => {
-        const updated = { ...prev }
-        setNestedValue(updated, path, newValue)
-        return updated
-      })
-    }
-  }
-}
-
-// Helper function to bind action props (onClick, onSubmit, etc.) to action handlers
-// Supports both object format: { name: "actionName", params: {...}, returns: {...} } and string format (legacy)
-export function bindActionProps(
-  props: Record<string, any>,
-  context: RenderContext,
-  actionPropNames: string[]
-): Record<string, any> {
-  const processed = { ...props }
-  
-  for (const propName of actionPropNames) {
-    if (!processed[propName]) continue
-    
-    // Handle object format: { name: "actionName", params: {...}, returns: {...} }
-    if (typeof processed[propName] === 'object' && processed[propName] !== null && !Array.isArray(processed[propName])) {
-      const actionConfig = processed[propName]
-      const actionName = actionConfig.name
-      
-      if (typeof actionName === 'string') {
-        const actionHandler = context.loadedActions.get(actionName)
-        if (actionHandler) {
-          // Get params from props[propName].params and resolve store variables
-          const rawParams = processed[propName].params || {}
-          const actionParams = resolveStoreVariables(rawParams, context.dataStore)
-          
-          // Get returns mapping if specified: { attr: path }
-          const returnsMapping = processed[propName].returns
-          
-          // Bind action handler with params from config
-          processed[propName] = async (...args: any[]) => {
-            // Merge with args[0] only when it's plain data (e.g. form data), not a React/DOM event
-            const firstArg = args.length > 0 ? args[0] : undefined
-            const isEvent = firstArg != null && typeof firstArg === 'object' &&
-              ('nativeEvent' in firstArg || (typeof (firstArg as any).preventDefault === 'function' && 'target' in firstArg))
-            const params = !isEvent && firstArg != null && typeof firstArg === 'object'
-              ? { ...actionParams, ...firstArg }
-              : actionParams
-
-            const result = await actionHandler(params)
-            
-            // If returns mapping is specified and action has a return value, store it
-            if (returnsMapping && result !== undefined && result !== null) {
-              const actionDef = getActionDefinition(actionName)
-              if (actionDef?.returns) {
-                // Store return values according to the mapping
-                context.setDataStore((prev) => {
-                  const updated = { ...prev }
-                  for (const [attr, path] of Object.entries(returnsMapping)) {
-                    if (typeof path === 'string' && result[attr] !== undefined) {
-                      setNestedValue(updated, path, result[attr])
-                    }
-                  }
-                  return updated
-                })
-              }
-            }
-            
-            return result
-          }
-        } else {
-          console.warn(`Action "${actionName}" not found for ${propName}`)
-          delete processed[propName]
-        }
-      }
-    }
-    // Handle legacy string format for backward compatibility
-    else if (typeof processed[propName] === 'string') {
-      const actionName = processed[propName]
-      const actionHandler = context.loadedActions.get(actionName)
-      if (actionHandler) {
-        // Bind action handler with random/default params for legacy format (don't merge event)
-        processed[propName] = (...args: any[]) => {
-          const randomParams = { value: Math.random().toString(36).substring(7) }
-          const firstArg = args.length > 0 ? args[0] : undefined
-          const isEvent = firstArg != null && typeof firstArg === 'object' &&
-            ('nativeEvent' in firstArg || (typeof (firstArg as any).preventDefault === 'function' && 'target' in firstArg))
-          const params = !isEvent && firstArg != null && typeof firstArg === 'object'
-            ? { ...randomParams, ...firstArg }
-            : randomParams
-          return actionHandler(params)
-        }
-      } else {
-        console.warn(`Action "${actionName}" not found for ${propName}`)
-        delete processed[propName]
-      }
-    }
-  }
-  
-  return processed
-}
 
 // Component definition with params (JSON schema) and load function
 export interface ComponentDefinition {
@@ -196,7 +38,8 @@ export interface ComponentDefinition {
   description: string
   params?: Record<string, JSONSchema>
   load?: () => Promise<any>
-  processProps?: ProcessPropsCallback
+  /** Resolve DECL props to component props (keys → nodes, action configs → handlers). Optional. */
+  resolveProps?: ResolvePropsCallback
 }
 
 // Map component names to their component definitions
@@ -223,14 +66,14 @@ const componentImportMap: Record<string, ComponentDefinition> = {
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
     load: () => import('../react/ExistWhen'),
     // Process props: convert children array from keys to rendered nodes
-    processProps: (props, context) => {
+    resolveProps: (props, context) => {
       const processed = { ...props }
-      
+
       if (Array.isArray(processed.children)) {
         const childrenKeys = processed.children.filter((c): c is string => typeof c === 'string')
-        processed.children = renderDeclElements(childrenKeys, context)
+        processed.children = renderDeclNodes(childrenKeys, context)
       }
-      
+
       return processed
     }
   },
@@ -273,8 +116,12 @@ const componentImportMap: Record<string, ComponentDefinition> = {
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
     load: () => import('./Button'),
     // Process props: bind onClick action
-    processProps: (props, context) => {
-      return bindActionProps(props, context, ['onClick'])
+    resolveProps: (props, context) => {
+      const processed = { ...props }
+      const onClick = createActionBind(processed.onClick, context)
+      if (onClick) processed.onClick = onClick
+      else if (processed.onClick != null) delete processed.onClick
+      return processed
     }
   },
   Card: {
@@ -321,29 +168,29 @@ const componentImportMap: Record<string, ComponentDefinition> = {
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
     load: () => import('../react/DeclCard'),
     // Process props: convert action, content, footer, and children arrays from keys to rendered nodes
-    processProps: (props, context) => {
+    resolveProps: (props, context) => {
       const processed = { ...props }
-      
+
       if (Array.isArray(processed.action)) {
         const actionKeys = processed.action.filter((c): c is string => typeof c === 'string')
-        processed.action = renderDeclElements(actionKeys, context)
+        processed.action = renderDeclNodes(actionKeys, context)
       }
-      
+
       if (Array.isArray(processed.content)) {
         const contentKeys = processed.content.filter((c): c is string => typeof c === 'string')
-        processed.content = renderDeclElements(contentKeys, context)
+        processed.content = renderDeclNodes(contentKeys, context)
       }
-      
+
       if (Array.isArray(processed.footer)) {
         const footerKeys = processed.footer.filter((c): c is string => typeof c === 'string')
-        processed.footer = renderDeclElements(footerKeys, context)
+        processed.footer = renderDeclNodes(footerKeys, context)
       }
-      
+
       if (Array.isArray(processed.children)) {
         const childrenKeys = processed.children.filter((c): c is string => typeof c === 'string')
-        processed.children = renderDeclElements(childrenKeys, context)
+        processed.children = renderDeclNodes(childrenKeys, context)
       }
-      
+
       return processed
     }
   },
@@ -415,9 +262,9 @@ const componentImportMap: Record<string, ComponentDefinition> = {
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
     load: () => import('./TextBox'),
     // Process props: handle dataBind prop and convert to value/onChange
-    processProps: (props, context) => {
+    resolveProps: (props, context) => {
       const processed = { ...props }
-      
+
       // Handle dataBind prop - convert to value and onChange
       if (processed.dataBind && typeof processed.dataBind === 'string') {
         const path = processed.dataBind as string
@@ -426,9 +273,9 @@ const componentImportMap: Record<string, ComponentDefinition> = {
         // If the store holds a Property object (e.g. { type, name, value, placeholder }), bind to .value so the input shows the scalar, not "[object Object]"
         const valuePath =
           bound != null &&
-          typeof bound === 'object' &&
-          !Array.isArray(bound) &&
-          'value' in bound
+            typeof bound === 'object' &&
+            !Array.isArray(bound) &&
+            'value' in bound
             ? `${path}.value`
             : path
         const valueBinding =
@@ -449,7 +296,7 @@ const componentImportMap: Record<string, ComponentDefinition> = {
         // Remove dataBind prop as it's DECL-specific and not needed by component
         delete processed.dataBind
       }
-      
+
       return processed
     }
   },
@@ -466,22 +313,18 @@ const componentImportMap: Record<string, ComponentDefinition> = {
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
     load: () => import('./Field'),
-    processProps: (props, context) => {
+    resolveProps: (props, context) => {
       const processed = { ...props }
       const dataBind = processed.dataBind as string | undefined
       if (dataBind && typeof dataBind === 'string') {
-        const property = getNestedValue(context.dataStore, dataBind)
+        const binding = createDataBind(dataBind, context)
+        const property = binding.get()
         processed.property =
           property != null && typeof property === 'object'
             ? { ...property }
             : { type: 'text', name: '', value: undefined }
-        processed.onChange = (value: unknown) => {
-          context.setDataStore((prev) => {
-            const updated = { ...prev }
-            setNestedValue(updated, `${dataBind}.value`, value)
-            return updated
-          })
-        }
+        const valueBinding = createDataBind(`${dataBind}.value`, context)
+        processed.onChange = (value: unknown) => valueBinding.set(value)
         delete processed.dataBind
       }
       return processed
@@ -501,11 +344,11 @@ const componentImportMap: Record<string, ComponentDefinition> = {
     },
     // @ts-ignore - Dynamic import of TSX file, resolved at runtime by Vite
     load: () => import('../react/DeclForm'),
-    processProps: (props, context) => {
+    resolveProps: (props, context) => {
       let processed = { ...props }
       if (Array.isArray(processed.children)) {
         const childrenKeys = processed.children.filter((c): c is string => typeof c === 'string')
-        processed.children = renderDeclElements(childrenKeys, context)
+        processed.children = renderDeclNodes(childrenKeys, context)
       }
       return processed
     }
@@ -585,7 +428,7 @@ export async function loadComponent(name: string): Promise<any> {
       throw error
     }
   }
-  
+
   console.warn(`Component "${name}" not found in registry. Available:`, Object.keys(componentImportMap))
   return null
 }
@@ -612,4 +455,26 @@ export function getAllComponentDefinitions(excludeLoad: boolean = false): Compon
  */
 export function getComponentDefinition(name: string): ComponentDefinition | undefined {
   return componentImportMap[name]
+}
+
+/**
+ * Load all components from the component registry.
+ * Returns a Map of component name to loaded component (for use in RenderContext.loadedComponents).
+ */
+export async function loadAllComponents(): Promise<Map<string, any>> {
+  const componentMap = new Map<string, any>()
+  const componentDefs = getAllComponentDefinitions()
+
+  for (const def of componentDefs) {
+    try {
+      const component = await loadComponent(def.name)
+      if (component) {
+        componentMap.set(def.name, component)
+      }
+    } catch (error) {
+      console.warn(`Failed to load component "${def.name}":`, error)
+    }
+  }
+
+  return componentMap
 }

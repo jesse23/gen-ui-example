@@ -153,8 +153,29 @@ function ReactGenComponent({ prompt }: ReactGenComponentProps) {
 
   return (
     <div className="flex h-full">
-      {/* Left Panel - Component Preview */}
+      {/* Left Panel - Generated Code */}
       <div className="w-1/2 border-r border-gray-200 flex flex-col">
+        <div className="py-2 px-4 border-b border-gray-200 bg-white flex-shrink-0">
+          <h2 className="text-sm font-semibold text-gray-800">Generated Code</h2>
+        </div>
+        <div className="flex-1">
+          <Editor
+            height="100%"
+            defaultLanguage="javascript"
+            value={code || ''}
+            theme="vs-light"
+            options={{
+              readOnly: true,
+              minimap: { enabled: false },
+              fontSize: 14,
+              wordWrap: 'on',
+            }}
+          />
+        </div>
+      </div>
+
+      {/* Right Panel - Component Preview */}
+      <div className="w-1/2 flex flex-col">
         <div className="py-2 px-4 border-b border-gray-200 bg-white flex-shrink-0">
           <h2 className="text-sm font-semibold text-gray-800">Component Preview</h2>
         </div>
@@ -190,27 +211,6 @@ function ReactGenComponent({ prompt }: ReactGenComponentProps) {
               <ValidatedComponent Component={Component} />
             </ErrorBoundary>
           )}
-        </div>
-      </div>
-
-      {/* Right Panel - Generated Code */}
-      <div className="w-1/2 flex flex-col">
-        <div className="py-2 px-4 border-b border-gray-200 bg-white flex-shrink-0">
-          <h2 className="text-sm font-semibold text-gray-800">Generated Code</h2>
-        </div>
-        <div className="flex-1">
-          <Editor
-            height="100%"
-            defaultLanguage="javascript"
-            value={code || ''}
-            theme="vs-light"
-            options={{
-              readOnly: true,
-              minimap: { enabled: false },
-              fontSize: 14,
-              wordWrap: 'on',
-            }}
-          />
         </div>
       </div>
     </div>

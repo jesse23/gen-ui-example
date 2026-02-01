@@ -1,15 +1,13 @@
 import React, { useState, useEffect, type ReactNode } from 'react'
+import { loadAllComponents } from '../../components/decl'
+import { loadAllActions } from '../../services/actions'
 import {
   type DeclNode,
   type DeclSpec,
-  type DeclData
-} from '../../services/declCodeGenerator'
-import {
-  loadAllComponents,
-  loadAllActions,
-  renderDeclElement,
+  type DeclData,
+  renderDeclNode,
   type RenderContext
-} from '../../services/declComponentUtils'
+} from '../../services/decl'
 import Spinner from './Spinner'
 
 interface DeclGenRendererProps {
@@ -84,7 +82,7 @@ function DeclGenRenderer({ declSpec }: DeclGenRendererProps) {
       const keysToRender = rootKeys.length > 0 ? rootKeys : view.map((node) => (typeof node.key === 'string' ? node.key : String(node.key || `node-${node.type}`)))
 
       const renderContext: RenderContext = {
-        declElements: nodesMap,
+        declNodes: nodesMap,
         loadedComponents,
         loadedActions: actionHandlers,
         dataStore,
@@ -93,12 +91,12 @@ function DeclGenRenderer({ declSpec }: DeclGenRendererProps) {
         }
       }
       if (keysToRender.length === 1) {
-        renderedComponent = renderDeclElement(keysToRender[0], renderContext)
+        renderedComponent = renderDeclNode(keysToRender[0], renderContext)
       } else {
         renderedComponent = React.createElement(
           React.Fragment,
           {},
-          ...keysToRender.map((key) => renderDeclElement(key, renderContext))
+          ...keysToRender.map((key) => renderDeclNode(key, renderContext))
         )
       }
     } catch (err: any) {

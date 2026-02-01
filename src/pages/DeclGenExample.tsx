@@ -2,8 +2,9 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import Editor from '@monaco-editor/react'
 import DeclGenRenderer from '../components/react/DeclGenRenderer'
 import { Button } from '../components/ui/button'
-import { generate, type DeclSpec } from '../services/declCodeGenerator'
-import { tryParseJson } from '../services/declComponentUtils'
+import { getAllComponentDefinitions } from '../components/decl'
+import { getAllActionDefinitions } from '../services/actions'
+import { generate, type DeclSpec, tryParseJsonFromText } from '../services/decl'
 import { getPageMetadata } from './pages'
 
 export const pageMetadata = getPageMetadata('/decl-gen')!
@@ -19,27 +20,31 @@ export default function DeclGenExample() {
   // isGenerating: true while AI is streaming, false otherwise
   const [isGenerating, setIsGenerating] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
+  // declSpec for the renderer: undefined = loading, null = error, DeclSpec = valid
+  const [declSpec, setDeclSpec] = useState<DeclSpec | null | undefined>({ view: [], data: {} })
   const effectRunRef = useRef<number>(0)
   const activeRunRef = useRef<number | null>(null)
 
-  // Derive declSpec from jsonText for the renderer
-  // undefined = loading (isGenerating && no valid JSON yet), null = error, DeclSpec = valid
-  const declSpec: DeclSpec | null | undefined = (() => {
+  // Parse jsonText into declSpec whenever it changes
+  useEffect(() => {
     if (isGenerating && !jsonText.trim()) {
-      return undefined // loading state
+      setDeclSpec(undefined) // loading state
+      return
     }
     if (error) {
-      return null
+      setDeclSpec(null)
+      return
     }
-    const parsed = tryParseJson<{ view?: unknown; data?: unknown }>(jsonText)
+    const parsed = tryParseJsonFromText(jsonText).value as { view?: unknown; data?: unknown } | null
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       const view = Array.isArray(parsed.view) ? parsed.view : []
       const data = (parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data)) ? parsed.data : {}
-      return { view, data } as DeclSpec
+      setDeclSpec({ view, data } as DeclSpec)
+      return
     }
     // Not valid JSON or wrong shape - empty spec if no input, else null
-    return jsonText.trim() ? null : { view: [], data: {} }
-  })()
+    setDeclSpec(jsonText.trim() ? null : { view: [], data: {} })
+  }, [jsonText, isGenerating, error])
 
   useEffect(() => {
     if (!prompt) return
@@ -60,12 +65,12 @@ export default function DeclGenExample() {
       // Mark this as the active run
       activeRunRef.current = currentRun
 
-      // Generate DECL spec with streaming
-      // The generate function sends parsed DeclSpec on each update
+      // Generate DECL spec with streaming (caller provides component/action definitions)
       generate(prompt, {
+        componentDefinitions: getAllComponentDefinitions(true),
+        actionDefinitions: getAllActionDefinitions(true),
         onUpdate: (spec) => {
           if (activeRunRef.current !== currentRun) return
-          // Update editor with formatted JSON
           setJsonText(JSON.stringify(spec, null, 2))
         }
       })
@@ -137,30 +142,10 @@ export default function DeclGenExample() {
         </div>
       </div>
       <div className="flex-1 overflow-hidden flex">
-        {/* Left Panel - Component Preview */}
+        {/* Left Panel - Editable JSON */}
         <div className="w-1/2 border-r border-gray-200 flex flex-col">
           <div className="py-2 px-4 border-b border-gray-200 bg-white flex-shrink-0">
-            <h2 className="text-sm font-semibold text-gray-800">DECL Preview</h2>
-          </div>
-          <div className="flex-1 overflow-auto">
-            {error ? (
-              <div className="p-4 bg-red-50 border border-red-200 rounded-md m-4">
-                <div className="text-red-800 font-semibold mb-2">Error</div>
-                <div className="text-red-600 text-sm">{error}</div>
-              </div>
-            ) : (
-              <DeclGenRenderer declSpec={declSpec} />
-            )}
-          </div>
-        </div>
-
-        {/* Right Panel - Editable JSON */}
-        <div className="w-1/2 flex flex-col">
-          <div className="py-2 px-4 border-b border-gray-200 bg-white flex-shrink-0 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-gray-800">DECL JSON</h2>
-            {!isGenerating && (
-              <span className="text-xs text-gray-500">Edit to test renderer</span>
-            )}
           </div>
           <div className="flex-1">
             <Editor
@@ -176,6 +161,23 @@ export default function DeclGenExample() {
                 wordWrap: 'on',
               }}
             />
+          </div>
+        </div>
+
+        {/* Right Panel - Component Preview */}
+        <div className="w-1/2 flex flex-col">
+          <div className="py-2 px-4 border-b border-gray-200 bg-white flex-shrink-0">
+            <h2 className="text-sm font-semibold text-gray-800">DECL Preview</h2>
+          </div>
+          <div className="flex-1 overflow-auto">
+            {error ? (
+              <div className="p-4 bg-red-50 border border-red-200 rounded-md m-4">
+                <div className="text-red-800 font-semibold mb-2">Error</div>
+                <div className="text-red-600 text-sm">{error}</div>
+              </div>
+            ) : (
+              <DeclGenRenderer declSpec={declSpec} />
+            )}
           </div>
         </div>
       </div>

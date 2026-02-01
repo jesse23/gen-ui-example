@@ -13,7 +13,9 @@
 
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
-import { generate } from '../src/services/declCodeGenerator'
+import { getAllComponentDefinitions } from '../src/components/decl'
+import { getAllActionDefinitions } from '../src/services/actions'
+import { generate } from '../src/services/decl'
 
 // Default prompt for testing
 const DEFAULT_PROMPT = 'Create a contact form with name, email, and message fields'
@@ -77,33 +79,28 @@ async function main() {
   console.log('Generating DECL structure...\n')
 
   try {
-    let streamedText = ''
     const result = await generate(prompt, {
-      onUpdate: ({ type, text }) => {
-        if (type === 'replace') {
-          streamedText = text
-          process.stdout.write(text)
-        } else {
-          streamedText += text
-          process.stdout.write(text)
-        }
+      componentDefinitions: getAllComponentDefinitions(true),
+      actionDefinitions: getAllActionDefinitions(true),
+      onUpdate: (spec) => {
+        process.stdout.write(`\rView nodes: ${spec.view.length}, Data keys: ${Object.keys(spec.data).length}   `)
       }
     })
-    
-    // Validate structure
-    console.log('\nValidation:')
-    console.log(`✓ Total elements: ${result.length}`)
-    console.log(`✓ Is array: ${Array.isArray(result) ? 'Yes' : 'No'}`)
-    
-    if (result.length > 0) {
-      const rootElement = result[0]
+
+    // Validate structure (result is DeclSpec { view, data })
+    console.log('\n\nValidation:')
+    console.log(`✓ View nodes: ${result.view.length}`)
+    console.log(`✓ Data keys: ${Object.keys(result.data).length}`)
+
+    if (result.view.length > 0) {
+      const rootElement = result.view[0]
       console.log(`✓ Root element key: ${rootElement.key}`)
       console.log(`✓ Root element type: ${rootElement.type}`)
       if (rootElement.children) {
         console.log(`✓ Root has ${rootElement.children.length} children`)
       }
     }
-    
+
     console.log('\n✓ Success!')
   } catch (error: any) {
     console.error('\n✗ Error:', error.message)
